@@ -1,9 +1,10 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import type { Item, Category } from './types'
 import { loadData, saveData } from './store'
 import CategorySection from './components/CategorySection'
 import AddEditModal from './components/AddEditModal'
-import StarRating from './components/StarRating'
+import { fetchRecs, needsTmdbKey } from './services/recommend'
+import type { ExternalItem } from './services/recommend'
 
 function fuzzyMatch(text: string, query: string): boolean {
   const t = text.toLowerCase()
@@ -17,12 +18,51 @@ function fuzzyMatch(text: string, query: string): boolean {
 
 const initialData = loadData()
 
+type ModalState = {
+  open: boolean
+  item?: Item | null
+  defaultCategoryId?: string
+  prefill?: { title: string; description?: string }
+}
+
 export default function App() {
   const [items, setItems] = useState<Item[]>(initialData.items)
   const [categories, setCategories] = useState<Category[]>(initialData.categories)
   const [search, setSearch] = useState('')
-  const [modal, setModal] = useState<{ open: boolean; item?: Item | null; defaultCategoryId?: string }>({ open: false })
-  const [recSeed, setRecSeed] = useState(() => Date.now())
+  const [modal, setModal] = useState<ModalState>({ open: false })
+
+  // Recommendations
+  const [recSeed, setRecSeed] = useState(0)
+  const [recItems, setRecItems] = useState<ExternalItem[]>([])
+  const [recLoading, setRecLoading] = useState(false)
+  const [recCategoryId, setRecCategoryId] = useState('')
+  const [recNeedsKey, setRecNeedsKey] = useState(false)
+
+  useEffect(() => {
+    if (categories.length === 0 || items.length === 0) return
+    const cat = categories[recSeed % categories.length]
+    const catItems = items.filter(i => i.categoryId === cat.id).sort((a, b) => b.rating - a.rating)
+    const seed = catItems[0]?.title ?? cat.name
+
+    if (needsTmdbKey(cat.name, cat.icon)) {
+      setRecNeedsKey(true)
+      setRecItems([])
+      setRecCategoryId(cat.id)
+      return
+    }
+
+    setRecNeedsKey(false)
+    setRecLoading(true)
+    setRecCategoryId(cat.id)
+
+    const existingTitles = new Set(items.map(i => i.title.toLowerCase()))
+    fetchRecs(cat.name, cat.icon, [seed])
+      .then(results =>
+        setRecItems(results.filter(r => !existingTitles.has(r.title.toLowerCase())).slice(0, 4))
+      )
+      .catch(() => setRecItems([]))
+      .finally(() => setRecLoading(false))
+  }, [recSeed, categories.length, items.length])
 
   function persist(newItems: Item[], newCategories: Category[]) {
     setItems(newItems)
@@ -46,8 +86,7 @@ export default function App() {
 
   function handleAddCategory(name: string, icon: string): string {
     const id = crypto.randomUUID()
-    const newCategories = [...categories, { id, name, icon }]
-    persist(items, newCategories)
+    persist(items, [...categories, { id, name, icon }])
     return id
   }
 
@@ -62,16 +101,8 @@ export default function App() {
     return items.filter((i) => fuzzyMatch(i.title, q) || fuzzyMatch(i.description, q))
   }, [items, search])
 
-  const recommendations = useMemo(() => {
-    if (items.length < 2) return []
-    const pool = items.filter(i => i.rating >= 4).length >= 3 ? items.filter(i => i.rating >= 4) : items
-    const shuffled = [...pool].sort((a, b) => {
-      const ha = Math.sin(recSeed + a.createdAt) * 10000
-      const hb = Math.sin(recSeed + b.createdAt) * 10000
-      return (ha - Math.floor(ha)) - (hb - Math.floor(hb))
-    })
-    return shuffled.slice(0, Math.min(3, shuffled.length))
-  }, [items, recSeed])
+  const recCat = categories.find(c => c.id === recCategoryId)
+  const showRec = !search.trim() && categories.length > 0 && items.length > 0
 
   return (
     <div className="app">
@@ -91,27 +122,80 @@ export default function App() {
           <button className="btn-add" onClick={() => setModal({ open: true })}>+</button>
         </div>
 
-        {!search.trim() && recommendations.length > 0 && (
+        {showRec && (
           <div className="rec-section">
             <div className="rec-header">
-              <span className="rec-title">猜你喜欢</span>
-              <button className="btn-rec-refresh" onClick={() => setRecSeed(Date.now())}>换一批</button>
+              <div className="rec-header-left">
+                <span className="rec-title">猜你喜欢</span>
+                {recCat && <span className="rec-cat-badge">{recCat.icon} {recCat.name}</span>}
+              </div>
+              <button
+                className="btn-rec-refresh"
+                onClick={() => setRecSeed(s => s + 1)}
+                disabled={recLoading}
+              >
+                {recLoading ? '加载中…' : '换一批'}
+              </button>
             </div>
-            <div className="rec-list">
-              {recommendations.map(item => {
-                const cat = categories.find(c => c.id === item.categoryId)
-                return (
-                  <div key={item.id} className="rec-card" onClick={() => setModal({ open: true, item })}>
-                    <div className="rec-card-meta">
-                      <span className="rec-card-cat">{cat?.icon} {cat?.name}</span>
-                      <StarRating value={item.rating} />
+
+            {recNeedsKey && (
+              <div className="rec-no-key">
+                电影推荐需要配置 TMDB API Key，请在{' '}
+                <code>src/services/recommend.ts</code> 顶部填入（
+                <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer">免费注册</a>
+                ），或点击"换一批"切换到其他分类。
+              </div>
+            )}
+
+            {!recNeedsKey && recLoading && (
+              <div className="rec-loading">
+                <span className="rec-loading-dot" />
+                <span className="rec-loading-dot" />
+                <span className="rec-loading-dot" />
+              </div>
+            )}
+
+            {!recNeedsKey && !recLoading && recItems.length === 0 && (
+              <div className="rec-empty">暂无推荐，点击"换一批"试试其他分类</div>
+            )}
+
+            {!recNeedsKey && !recLoading && recItems.length > 0 && (
+              <div className="rec-list">
+                {recItems.map(ext => (
+                  <div key={ext.externalId} className="rec-card">
+                    {ext.coverUrl
+                      ? <img className="rec-card-cover" src={ext.coverUrl} alt={ext.title} loading="lazy" />
+                      : <div className="rec-card-cover rec-card-cover-placeholder">{recCat?.icon ?? '?'}</div>
+                    }
+                    <div className="rec-card-body">
+                      <span className="rec-card-source">{ext.source}</span>
+                      <div className="rec-card-title">{ext.title}</div>
+                      {(ext.subtitle || ext.year) && (
+                        <div className="rec-card-sub">
+                          {[ext.subtitle, ext.year].filter(Boolean).join(' · ')}
+                        </div>
+                      )}
+                      {ext.description && (
+                        <div className="rec-card-desc">{ext.description}</div>
+                      )}
+                      <button
+                        className="btn-rec-add"
+                        onClick={() => setModal({
+                          open: true,
+                          defaultCategoryId: recCategoryId,
+                          prefill: {
+                            title: ext.title,
+                            description: [ext.subtitle, ext.year].filter(Boolean).join(' · '),
+                          },
+                        })}
+                      >
+                        + 添加到收藏
+                      </button>
                     </div>
-                    <div className="rec-card-title">{item.title}</div>
-                    {item.description && <div className="rec-card-desc">{item.description}</div>}
                   </div>
-                )
-              })}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -148,6 +232,7 @@ export default function App() {
           item={modal.item}
           categories={categories}
           defaultCategoryId={modal.defaultCategoryId}
+          prefill={modal.prefill}
           onSave={handleSave}
           onClose={() => setModal({ open: false })}
           onAddCategory={handleAddCategory}

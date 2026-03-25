@@ -6,14 +6,15 @@ interface Props {
   item?: Item | null
   categories: Category[]
   defaultCategoryId?: string
+  prefill?: { title: string; description?: string }
   onSave: (data: Omit<Item, 'id' | 'createdAt'>) => void
   onClose: () => void
   onAddCategory: (name: string, icon: string) => string
 }
 
-export default function AddEditModal({ item, categories, defaultCategoryId, onSave, onClose, onAddCategory }: Props) {
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
+export default function AddEditModal({ item, categories, defaultCategoryId, prefill, onSave, onClose, onAddCategory }: Props) {
+  const [title, setTitle] = useState(prefill?.title ?? '')
+  const [description, setDescription] = useState(prefill?.description ?? '')
   const [rating, setRating] = useState(5)
   const [categoryId, setCategoryId] = useState(defaultCategoryId ?? categories[0]?.id ?? '')
   const [newCatName, setNewCatName] = useState('')
