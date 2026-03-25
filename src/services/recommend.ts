@@ -2,7 +2,7 @@
 // 电影：TMDB（免费，需要 Key → https://www.themoviedb.org/settings/api）
 // 音乐：iTunes Search API（免费，无需 Key）
 
-export const TMDB_API_KEY = '' // ← 填入你的 TMDB API Key
+const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY ?? ''
 
 export interface ExternalItem {
   externalId: string
