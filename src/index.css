@@ -65,6 +65,20 @@ body {
   overflow: hidden;
 }
 
+.sidebar-resize-handle {
+  width: 6px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 10;
+  transition: background 0.15s;
+}
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle:active {
+  background: var(--grad);
+}
+
 .sidebar-brand {
   display: flex;
   align-items: center;
@@ -1276,13 +1290,11 @@ body {
 
 /* ── Responsive ── */
 @media (max-width: 900px) {
-  .sidebar { width: 210px; }
   .page-overview, .page-category, .page-search { padding: 28px 28px 48px; }
   .overview-title { font-size: 40px; }
 }
 
 @media (max-width: 640px) {
-  .sidebar { width: 180px; }
   .overview-title { font-size: 32px; }
   .overview-cat-grid { grid-template-columns: 1fr; }
   .list-header-row,

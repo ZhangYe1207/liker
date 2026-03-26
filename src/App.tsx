@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import type { Item, Category } from './types'
 import { loadData, saveData } from './store'
 import CategorySection from './components/CategorySection'
@@ -32,6 +32,31 @@ export default function App() {
   const [modal, setModal] = useState<ModalState>({ open: false })
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
+  const [sidebarWidth, setSidebarWidth] = useState(248)
+  const isResizing = useRef(false)
+
+  const handleMouseDown = useCallback(() => {
+    isResizing.current = true
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing.current) return
+      const newWidth = Math.min(400, Math.max(180, e.clientX))
+      setSidebarWidth(newWidth)
+    }
+
+    const handleMouseUp = () => {
+      isResizing.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+  }, [])
 
   // Recommendations
   const [recSeed, setRecSeed] = useState(0)
@@ -114,7 +139,7 @@ export default function App() {
   return (
     <div className="app-shell">
       {/* ── Sidebar ── */}
-      <aside className="sidebar">
+      <aside className="sidebar" style={{ width: sidebarWidth }}>
         <div className="sidebar-brand">
           <span className="sidebar-brand-mark">✦</span>
           <span className="sidebar-brand-text">我的喜好</span>
@@ -170,6 +195,8 @@ export default function App() {
           </button>
         </div>
       </aside>
+
+      <div className="sidebar-resize-handle" onMouseDown={handleMouseDown} />
 
       {/* ── Main ── */}
       <main className="main-area">
