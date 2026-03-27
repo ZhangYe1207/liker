@@ -1,6 +1,8 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import type { Item, Category, LogbookEntry, ItemStatus } from './types'
 import { createDataLayer, type DataLayer } from './data'
+import { shouldMigrate, migrateToSupabase } from './data/migration'
+import { supabase } from './lib/supabase'
 import { useAuth } from './contexts/AuthContext'
 import CategorySection from './components/CategorySection'
 import AddEditModal from './components/AddEditModal'
@@ -41,15 +43,44 @@ export default function App() {
   const isResizing = useRef(false)
   const dlRef = useRef<DataLayer>(createDataLayer(session))
 
+  const [migrating, setMigrating] = useState(false)
+  const [migrationMsg, setMigrationMsg] = useState('')
+
   useEffect(() => {
     const dl = createDataLayer(session)
     dlRef.current = dl
     setLoading(true)
-    Promise.all([dl.getItems(), dl.getCategories()]).then(([loadedItems, loadedCategories]) => {
+
+    async function load() {
+      // Check if migration needed on first login
+      if (session?.user && supabase) {
+        const needsMigration = await shouldMigrate(supabase, session.user).catch(() => false)
+        if (needsMigration) {
+          setMigrating(true)
+          try {
+            const result = await migrateToSupabase(supabase, session.user, (p) => {
+              setMigrationMsg(`${p.step}… ${p.current}/${p.total}`)
+            })
+            setMigrationMsg(`迁移完成: ${result.categoryCount} 个分类, ${result.itemCount} 条记录`)
+            // Re-create DataLayer to read from Supabase after migration
+            const freshDl = createDataLayer(session)
+            dlRef.current = freshDl
+          } catch (err: any) {
+            setMigrationMsg(`迁移失败: ${err.message}`)
+          }
+          setTimeout(() => { setMigrating(false); setMigrationMsg('') }, 2000)
+        }
+      }
+
+      const [loadedItems, loadedCategories] = await Promise.all([
+        dlRef.current.getItems(),
+        dlRef.current.getCategories(),
+      ])
       setItems(loadedItems)
       setCategories(loadedCategories)
       setLoading(false)
-    })
+    }
+    load()
   }, [session])
 
   const handleMouseDown = useCallback(() => {
@@ -182,10 +213,11 @@ export default function App() {
   const totalItems = items.length
   const avgRating = totalItems > 0 ? items.reduce((s, i) => s + i.rating, 0) / totalItems : 0
 
-  if (loading) {
+  if (loading || migrating) {
     return (
-      <div className="app-shell" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <span style={{ opacity: 0.5 }}>加载中…</span>
+      <div className="app-shell" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '8px' }}>
+        <span style={{ opacity: 0.5 }}>{migrating ? '正在迁移数据…' : '加载中…'}</span>
+        {migrationMsg && <span style={{ opacity: 0.4, fontSize: '13px' }}>{migrationMsg}</span>}
       </div>
     )
   }
