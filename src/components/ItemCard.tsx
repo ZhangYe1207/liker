@@ -64,9 +64,12 @@ export default function ItemCard({ item, variant = 'card', onEdit, onDelete }: P
   const cardStatus = item.status ?? 'completed'
   return (
     <div
-      className={`item-card${pendingDelete ? ' item-card-confirming' : ''}`}
+      className={`item-card${pendingDelete ? ' item-card-confirming' : ''}${item.coverUrl ? ' item-card-has-cover' : ''}`}
       onClick={() => !pendingDelete && onEdit(item)}
     >
+      {item.coverUrl && (
+        <img className="item-card-cover" src={item.coverUrl} alt={item.title} loading="lazy" />
+      )}
       <div className="item-card-top">
         <span className="item-card-title">{item.title}</span>
         {cardStatus === 'completed'
