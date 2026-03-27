@@ -8,6 +8,7 @@ import CategorySection from './components/CategorySection'
 import AddEditModal from './components/AddEditModal'
 import AuthModal from './components/AuthModal'
 import SteamSyncModal from './components/SteamSyncModal'
+import LogbookView from './components/LogbookView'
 import { fetchRecs, needsTmdbKey } from './services/recommend'
 import type { ExternalItem } from './services/recommend'
 
@@ -37,6 +38,8 @@ export default function App() {
   const [modal, setModal] = useState<ModalState>({ open: false })
   const [authModal, setAuthModal] = useState(false)
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
+  const [statusFilter, setStatusFilter] = useState<ItemStatus | ''>('')
+  const [showLogbook, setShowLogbook] = useState(false)
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
   const [sidebarWidth, setSidebarWidth] = useState(248)
   const [steamModal, setSteamModal] = useState(false)
@@ -246,12 +249,19 @@ export default function App() {
 
         <nav className="sidebar-nav">
           <button
-            className={`sidebar-nav-item ${!selectedCategoryId && !isSearching ? 'active' : ''}`}
-            onClick={() => { setSelectedCategoryId(null); setSearch('') }}
+            className={`sidebar-nav-item ${!selectedCategoryId && !isSearching && !showLogbook ? 'active' : ''}`}
+            onClick={() => { setSelectedCategoryId(null); setSearch(''); setShowLogbook(false) }}
           >
             <span className="nav-icon">⊞</span>
             <span className="nav-label">全部收藏</span>
             <span className="nav-count">{items.length}</span>
+          </button>
+          <button
+            className={`sidebar-nav-item ${showLogbook ? 'active' : ''}`}
+            onClick={() => { setShowLogbook(true); setSelectedCategoryId(null); setSearch('') }}
+          >
+            <span className="nav-icon">📋</span>
+            <span className="nav-label">活动记录</span>
           </button>
 
           {categories.length > 0 && (
@@ -271,8 +281,8 @@ export default function App() {
           {categories.map((cat) => (
             <button
               key={cat.id}
-              className={`sidebar-nav-item ${selectedCategoryId === cat.id && !isSearching ? 'active' : ''}`}
-              onClick={() => { setSelectedCategoryId(cat.id); setSearch('') }}
+              className={`sidebar-nav-item ${selectedCategoryId === cat.id && !isSearching && !showLogbook ? 'active' : ''}`}
+              onClick={() => { setSelectedCategoryId(cat.id); setSearch(''); setShowLogbook(false) }}
             >
               <span className="nav-icon">{cat.icon}</span>
               <span className="nav-label">{cat.name}</span>
@@ -314,7 +324,9 @@ export default function App() {
 
       {/* ── Main ── */}
       <main className="main-area">
-        {isSearching ? (
+        {showLogbook ? (
+          <LogbookView dataLayer={dlRef.current} items={items} categories={categories} />
+        ) : isSearching ? (
           /* Search results */
           <div className="page-search">
             <div className="page-header">
@@ -401,9 +413,24 @@ export default function App() {
               </div>
             </div>
 
+            <div className="status-filter-bar">
+              {(['', 'want', 'in_progress', 'completed', 'dropped'] as const).map(s => (
+                <button
+                  key={s}
+                  className={`pill ${statusFilter === s ? 'active' : ''}`}
+                  onClick={() => setStatusFilter(s)}
+                >
+                  {s === '' ? '全部' : s === 'want' ? '🔖 想看' : s === 'in_progress' ? '▶ 在看' : s === 'completed' ? '✓ 看过' : '✗ 搁置'}
+                </button>
+              ))}
+            </div>
+
             <CategorySection
               category={selectedCategory}
-              items={items.filter((i) => i.categoryId === selectedCategoryId)}
+              items={items.filter((i) =>
+                i.categoryId === selectedCategoryId &&
+                (!statusFilter || (i.status ?? 'completed') === statusFilter)
+              )}
               viewMode={viewMode}
               hideHeader
               onEditItem={(item) => setModal({ open: true, item })}
