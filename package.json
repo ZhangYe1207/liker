@@ -8,7 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "claude": "^0.1.1",
+    "@supabase/supabase-js": "^2",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"
   },
