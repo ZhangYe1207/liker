@@ -3,6 +3,7 @@ import type { Item, Category } from './types'
 import { loadData, saveData } from './store'
 import CategorySection from './components/CategorySection'
 import AddEditModal from './components/AddEditModal'
+import SteamSyncModal from './components/SteamSyncModal'
 import { fetchRecs, needsTmdbKey } from './services/recommend'
 import type { ExternalItem } from './services/recommend'
 
@@ -33,6 +34,7 @@ export default function App() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
   const [sidebarWidth, setSidebarWidth] = useState(248)
+  const [steamModal, setSteamModal] = useState(false)
   const isResizing = useRef(false)
 
   const handleMouseDown = useCallback(() => {
@@ -123,6 +125,15 @@ export default function App() {
     persist(items.filter((i) => i.categoryId !== id), categories.filter((c) => c.id !== id))
   }
 
+  function handleSteamSync(newItems: Omit<Item, 'id' | 'createdAt'>[], _categoryId: string) {
+    const created: Item[] = newItems.map((data) => ({
+      ...data,
+      id: crypto.randomUUID(),
+      createdAt: Date.now(),
+    }))
+    persist([...items, ...created], categories)
+  }
+
   const isSearching = search.trim().length > 0
 
   const filtered = useMemo(() => {
@@ -169,7 +180,17 @@ export default function App() {
           </button>
 
           {categories.length > 0 && (
-            <div className="sidebar-section-label">分类</div>
+            <>
+              <div className="sidebar-section-header">
+                <span className="sidebar-section-label">分类</span>
+                <button
+                  className="sidebar-add-cat-btn"
+                  title="添加分类"
+                  onClick={() => setModal({ open: true, item: null })}
+                >+</button>
+              </div>
+              <div className="sidebar-section-divider" />
+            </>
           )}
 
           {categories.map((cat) => (
@@ -192,6 +213,13 @@ export default function App() {
           >
             <span className="sidebar-add-plus">+</span>
             <span>新增记录</span>
+          </button>
+          <button
+            className="sidebar-steam-btn"
+            onClick={() => setSteamModal(true)}
+          >
+            <span>🎮</span>
+            <span>Steam 同步</span>
           </button>
         </div>
       </aside>
@@ -462,6 +490,16 @@ export default function App() {
           onSave={handleSave}
           onClose={() => setModal({ open: false })}
           onAddCategory={handleAddCategory}
+        />
+      )}
+
+      {steamModal && (
+        <SteamSyncModal
+          items={items}
+          categories={categories}
+          onSync={handleSteamSync}
+          onAddCategory={handleAddCategory}
+          onClose={() => setSteamModal(false)}
         />
       )}
     </div>

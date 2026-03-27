@@ -1,33 +1,38 @@
 # Liker — Claude 工作规范
 
-## 功能开发工作流（必须严格遵守）
+## 开发工作流：Compound Engineering
 
-**每次添加或修改功能，按以下顺序执行，不可跳步：**
+采用 Compound Engineering 四步循环，每次功能开发严格遵循：
 
-1. **更新 PRD**（`PLAN.md`）
-   - 修改涉及的章节：功能描述、设计细节、技术选型、数据模型变更等
-   - 明确说明"等待审批"，不得擅自开始写代码
+### 1. Brainstorm → Plan（`/ce:brainstorm` → `/ce:plan`）
+- 探索需求、讨论方案，生成详细实施计划
+- 涉及 UI 改动时，Plan 阶段必须包含高保真布局描述或 HTML/CSS 原型
+- UI 改动不得导致 `types.ts` / `store.ts` 大幅变化
+- 用户审批 Plan 后才进入下一步
 
-2. **等用户审批**
-   - 用户明确 approve 后，才进入下一步
+### 2. Work（`/ce:work`）
+- 按 Plan 执行，每完成一个逻辑单元提交一次
+- 提交使用 `/git-commit`
 
-3. **编写代码**
-   - 遵循 `commit-review` skill 的流程
-   - 每完成一个逻辑单元提交一次
+### 3. Review（`/ce:review`）
+- 多 agent 代码审查，覆盖正确性、安全性、性能
+- 修复审查发现的问题
 
-## 前端 UI 改动规则
-
-- 先输出高保真示意图（可以是 HTML/CSS 原型，或详细的布局文字描述），不直接改组件
-- UI 改动**不得导致数据结构大幅变化**（即 `types.ts` / `store.ts` 保持稳定）
-- 示意图获得用户认可后，再开始实际代码修改
+### 4. Compound（`/ce:compound`）
+- 沉淀本次开发中学到的知识：架构决策、踩坑记录、模式总结
+- 更新 CLAUDE.md 或知识文件，让下一次开发更快
 
 ## PRD 文件
 
-`PLAN.md` 是本项目的唯一 PRD，任何功能变更都需先更新它。
+`PLAN.md` 是项目的产品需求文档，记录功能规划和完成状态。
 
 ## 项目简介
 
 - **React 18 + TypeScript + Vite**，纯前端，无服务端
-- 数据存 `localStorage`，外部 API：Open Library / TMDB / iTunes
+- 数据存 `localStorage`，外部 API：Open Library / TMDB / iTunes / Steam
 - 样式：纯 CSS 变量，无 UI 库，字体：Cormorant Garamond（展示）+ Outfit（UI）
 - 详见 `PLAN.md`
+
+## 路径规则
+
+- 访问或修改文件时，一律使用相对于项目根目录的路径，不使用绝对路径

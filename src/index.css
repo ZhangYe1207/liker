@@ -167,13 +167,42 @@ body {
 }
 .sidebar-nav::-webkit-scrollbar { display: none; }
 
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 10px 5px;
+}
 .sidebar-section-label {
-  font-size: 9.5px;
+  font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 1.5px;
   text-transform: uppercase;
-  color: var(--sb-text-dim);
-  padding: 14px 10px 5px;
+  color: #8a8496;
+}
+.sidebar-add-cat-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: #8a8496;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+.sidebar-add-cat-btn:hover {
+  background: rgba(138, 132, 150, 0.15);
+  color: #c4b5fd;
+}
+.sidebar-section-divider {
+  height: 1px;
+  background: rgba(138, 132, 150, 0.2);
+  margin: 2px 10px 4px;
 }
 
 .sidebar-nav-item {
@@ -188,7 +217,7 @@ body {
   border-radius: var(--r-md);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 13.5px;
+  font-size: 14.5px;
   font-weight: 400;
   text-align: left;
   transition: background 0.15s, color 0.15s;
@@ -217,9 +246,9 @@ body {
 .nav-label { flex: 1; }
 
 .nav-count {
-  font-size: 11px;
-  color: var(--sb-text-dim);
-  background: rgba(255,255,255,0.06);
+  font-size: 12px;
+  color: #9992a8;
+  background: rgba(255,255,255,0.08);
   padding: 2px 7px;
   border-radius: 20px;
   min-width: 22px;
@@ -259,6 +288,28 @@ body {
   opacity: 0.9;
   transform: translateY(-1px);
   box-shadow: 0 6px 24px rgba(168,85,247,0.42);
+}
+
+.sidebar-steam-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px;
+  margin-top: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(138, 132, 150, 0.25);
+  background: transparent;
+  color: #b0aab8;
+  font: 600 14px/1 'Outfit', sans-serif;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.sidebar-steam-btn:hover {
+  background: rgba(138, 132, 150, 0.1);
+  color: #e0dce6;
+  border-color: rgba(138, 132, 150, 0.4);
 }
 
 .sidebar-add-plus {
@@ -1287,6 +1338,70 @@ body {
 }
 
 .btn-secondary:hover { background: #e8e2f4; }
+
+/* ── Steam Sync Modal ── */
+.steam-error {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  margin-bottom: 8px;
+}
+.steam-help-link {
+  display: inline-block;
+  font-size: 12.5px;
+  color: #a855f7;
+  margin: 4px 0 12px;
+}
+.steam-help-text {
+  font-size: 12.5px;
+  color: #9993a8;
+  margin: 4px 0 8px;
+}
+.steam-proxy-toggle {
+  background: none;
+  border: none;
+  color: #9993a8;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 6px 0;
+  margin-bottom: 4px;
+}
+.steam-proxy-toggle:hover { color: #635e6e; }
+.steam-syncing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 40px 0;
+  color: #635e6e;
+  font-size: 14px;
+}
+.steam-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 0 8px;
+}
+.steam-result-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #34d399, #10b981);
+  color: #fff;
+  font-size: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.steam-result-text {
+  font-size: 15px;
+  color: #1a1625;
+  text-align: center;
+}
 
 /* ── Responsive ── */
 @media (max-width: 900px) {
