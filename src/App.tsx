@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import type { Item, Category } from './types'
-import { loadData, saveData } from './store'
+import { createDataLayer } from './data'
 import CategorySection from './components/CategorySection'
 import AddEditModal from './components/AddEditModal'
 import SteamSyncModal from './components/SteamSyncModal'
@@ -17,7 +17,7 @@ function fuzzyMatch(text: string, query: string): boolean {
   return qi === q.length
 }
 
-const initialData = loadData()
+const dataLayer = createDataLayer()
 
 type ModalState = {
   open: boolean
@@ -27,8 +27,9 @@ type ModalState = {
 }
 
 export default function App() {
-  const [items, setItems] = useState<Item[]>(initialData.items)
-  const [categories, setCategories] = useState<Category[]>(initialData.categories)
+  const [items, setItems] = useState<Item[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
+  const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [modal, setModal] = useState<ModalState>({ open: false })
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
@@ -36,6 +37,14 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(248)
   const [steamModal, setSteamModal] = useState(false)
   const isResizing = useRef(false)
+
+  useEffect(() => {
+    Promise.all([dataLayer.getItems(), dataLayer.getCategories()]).then(([loadedItems, loadedCategories]) => {
+      setItems(loadedItems)
+      setCategories(loadedCategories)
+      setLoading(false)
+    })
+  }, [])
 
   const handleMouseDown = useCallback(() => {
     isResizing.current = true
@@ -93,36 +102,37 @@ export default function App() {
       .finally(() => setRecLoading(false))
   }, [recSeed, categories.length, items.length])
 
-  function persist(newItems: Item[], newCategories: Category[]) {
-    setItems(newItems)
-    setCategories(newCategories)
-    saveData({ items: newItems, categories: newCategories })
-  }
-
   function handleSave(data: Omit<Item, 'id' | 'createdAt'>) {
     if (modal.item) {
-      const newItems = items.map((i) => i.id === modal.item!.id ? { ...i, ...data } : i)
-      persist(newItems, categories)
+      const updated = { ...modal.item, ...data, updatedAt: Date.now() }
+      setItems(prev => prev.map(i => i.id === modal.item!.id ? updated : i))
+      dataLayer.saveItem(updated)
     } else {
-      const newItem: Item = { ...data, id: crypto.randomUUID(), createdAt: Date.now() }
-      persist([...items, newItem], categories)
+      const newItem: Item = { ...data, id: crypto.randomUUID(), createdAt: Date.now(), updatedAt: Date.now() }
+      setItems(prev => [...prev, newItem])
+      dataLayer.saveItem(newItem)
     }
   }
 
   function handleDeleteItem(id: string) {
-    persist(items.filter((i) => i.id !== id), categories)
+    setItems(prev => prev.filter(i => i.id !== id))
+    dataLayer.deleteItem(id)
   }
 
   function handleAddCategory(name: string, icon: string): string {
     const id = crypto.randomUUID()
-    persist(items, [...categories, { id, name, icon }])
+    const category = { id, name, icon }
+    setCategories(prev => [...prev, category])
+    dataLayer.saveCategory(category)
     return id
   }
 
   function handleDeleteCategory(id: string) {
     if (!confirm('删除分类将同时删除该分类下的所有记录，确定吗？')) return
     if (selectedCategoryId === id) setSelectedCategoryId(null)
-    persist(items.filter((i) => i.categoryId !== id), categories.filter((c) => c.id !== id))
+    setItems(prev => prev.filter(i => i.categoryId !== id))
+    setCategories(prev => prev.filter(c => c.id !== id))
+    dataLayer.deleteCategory(id)
   }
 
   function handleSteamSync(newItems: Omit<Item, 'id' | 'createdAt'>[], _categoryId: string) {
@@ -130,8 +140,10 @@ export default function App() {
       ...data,
       id: crypto.randomUUID(),
       createdAt: Date.now(),
+      updatedAt: Date.now(),
     }))
-    persist([...items, ...created], categories)
+    setItems(prev => [...prev, ...created])
+    dataLayer.bulkSaveItems(created)
   }
 
   const isSearching = search.trim().length > 0
@@ -146,6 +158,14 @@ export default function App() {
   const selectedCategory = categories.find(c => c.id === selectedCategoryId)
   const totalItems = items.length
   const avgRating = totalItems > 0 ? items.reduce((s, i) => s + i.rating, 0) / totalItems : 0
+
+  if (loading) {
+    return (
+      <div className="app-shell" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <span style={{ opacity: 0.5 }}>加载中…</span>
+      </div>
+    )
+  }
 
   return (
     <div className="app-shell">
