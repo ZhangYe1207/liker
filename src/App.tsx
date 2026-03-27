@@ -1,8 +1,10 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import type { Item, Category } from './types'
 import { createDataLayer } from './data'
+import { useAuth } from './contexts/AuthContext'
 import CategorySection from './components/CategorySection'
 import AddEditModal from './components/AddEditModal'
+import AuthModal from './components/AuthModal'
 import SteamSyncModal from './components/SteamSyncModal'
 import { fetchRecs, needsTmdbKey } from './services/recommend'
 import type { ExternalItem } from './services/recommend'
@@ -27,11 +29,13 @@ type ModalState = {
 }
 
 export default function App() {
+  const { user, signOut } = useAuth()
   const [items, setItems] = useState<Item[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [modal, setModal] = useState<ModalState>({ open: false })
+  const [authModal, setAuthModal] = useState(false)
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
   const [sidebarWidth, setSidebarWidth] = useState(248)
@@ -241,6 +245,17 @@ export default function App() {
             <span>🎮</span>
             <span>Steam 同步</span>
           </button>
+          {user ? (
+            <button className="sidebar-auth-btn" onClick={() => signOut()}>
+              <span>👤</span>
+              <span>{user.email?.split('@')[0] ?? '已登录'}</span>
+            </button>
+          ) : (
+            <button className="sidebar-auth-btn" onClick={() => setAuthModal(true)}>
+              <span>☁</span>
+              <span>登录 / 注册</span>
+            </button>
+          )}
         </div>
       </aside>
 
@@ -521,6 +536,10 @@ export default function App() {
           onAddCategory={handleAddCategory}
           onClose={() => setSteamModal(false)}
         />
+      )}
+
+      {authModal && (
+        <AuthModal onClose={() => setAuthModal(false)} />
       )}
     </div>
   )

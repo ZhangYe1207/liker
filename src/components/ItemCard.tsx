@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Item } from '../types'
 import StarRating from './StarRating'
+import StatusBadge from './StatusBadge'
 
 interface Props {
   item: Item
@@ -38,13 +39,17 @@ export default function ItemCard({ item, variant = 'card', onEdit, onDelete }: P
       )
     }
 
+    const status = item.status ?? 'completed'
     return (
       <div className="list-item" onClick={() => onEdit(item)}>
         <span className="list-item-title">{item.title}</span>
+        <StatusBadge status={status} />
         <span className="list-item-desc">{item.description || '—'}</span>
-        <span className="list-item-rating">
-          <StarRating value={item.rating} size={12} />
-        </span>
+        {status === 'completed' && (
+          <span className="list-item-rating">
+            <StarRating value={item.rating} size={12} />
+          </span>
+        )}
         <span className="list-item-date">{formatDate(item.createdAt)}</span>
         <button
           className="list-item-delete"
@@ -56,6 +61,7 @@ export default function ItemCard({ item, variant = 'card', onEdit, onDelete }: P
   }
 
   // Card variant
+  const cardStatus = item.status ?? 'completed'
   return (
     <div
       className={`item-card${pendingDelete ? ' item-card-confirming' : ''}`}
@@ -63,7 +69,10 @@ export default function ItemCard({ item, variant = 'card', onEdit, onDelete }: P
     >
       <div className="item-card-top">
         <span className="item-card-title">{item.title}</span>
-        <StarRating value={item.rating} size={13} />
+        {cardStatus === 'completed'
+          ? <StarRating value={item.rating} size={13} />
+          : <StatusBadge status={cardStatus} />
+        }
       </div>
 
       {item.description && (
@@ -72,6 +81,7 @@ export default function ItemCard({ item, variant = 'card', onEdit, onDelete }: P
 
       <div className="item-card-footer">
         <span className="item-card-date">{formatDate(item.createdAt)}</span>
+        {cardStatus === 'completed' && <StatusBadge status={cardStatus} />}
       </div>
 
       {pendingDelete ? (

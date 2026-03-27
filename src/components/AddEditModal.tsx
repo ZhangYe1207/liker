@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react'
-import type { Item, Category } from '../types'
+import type { Item, Category, ItemStatus } from '../types'
 import StarRating from './StarRating'
+
+const STATUS_OPTIONS: { value: ItemStatus; label: string }[] = [
+  { value: 'completed', label: '✓ 看过' },
+  { value: 'in_progress', label: '▶ 在看' },
+  { value: 'want', label: '🔖 想看' },
+  { value: 'dropped', label: '✗ 搁置' },
+]
 
 interface Props {
   item?: Item | null
@@ -16,6 +23,7 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
   const [title, setTitle] = useState(prefill?.title ?? '')
   const [description, setDescription] = useState(prefill?.description ?? '')
   const [rating, setRating] = useState(5)
+  const [status, setStatus] = useState<ItemStatus>('completed')
   const [categoryId, setCategoryId] = useState(defaultCategoryId ?? categories[0]?.id ?? '')
   const [newCatName, setNewCatName] = useState('')
   const [newCatIcon, setNewCatIcon] = useState('⭐')
@@ -26,13 +34,20 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
       setTitle(item.title)
       setDescription(item.description)
       setRating(item.rating)
+      setStatus(item.status ?? 'completed')
       setCategoryId(item.categoryId)
     }
   }, [item])
 
   function handleSave() {
     if (!title.trim()) return
-    onSave({ title: title.trim(), description: description.trim(), rating, categoryId })
+    onSave({
+      title: title.trim(),
+      description: description.trim(),
+      rating: status === 'completed' ? rating : 0,
+      categoryId,
+      status,
+    })
     onClose()
   }
 
@@ -103,8 +118,26 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
           rows={3}
         />
 
-        <label className="form-label">评分</label>
-        <StarRating value={rating} onChange={setRating} size={28} />
+        <label className="form-label">状态</label>
+        <div className="status-selector">
+          {STATUS_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              className={`pill ${status === opt.value ? 'active' : ''}`}
+              onClick={() => setStatus(opt.value)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {status === 'completed' && (
+          <>
+            <label className="form-label">评分</label>
+            <StarRating value={rating} onChange={setRating} size={28} />
+          </>
+        )}
 
         <div className="modal-actions">
           <button className="btn-secondary" onClick={onClose}>取消</button>
