@@ -36,6 +36,8 @@ function toRow(item: Item, userId: string) {
     external_id: item.externalId ?? null,
     source: item.source ?? null,
     metadata: item.metadata ?? {},
+    created_at: new Date(item.createdAt).toISOString(),
+    updated_at: new Date(item.updatedAt ?? item.createdAt).toISOString(),
   }
 }
 
@@ -112,6 +114,14 @@ export class SupabaseDataLayer implements DataLayer {
   }
 
   async deleteCategory(id: string): Promise<void> {
+    // Delete associated items first to avoid orphaned rows
+    const { error: itemsError } = await this.supabase
+      .from('items')
+      .delete()
+      .eq('category_id', id)
+      .eq('user_id', this.user.id)
+    if (itemsError) throw itemsError
+
     const { error } = await this.supabase
       .from('categories')
       .delete()
