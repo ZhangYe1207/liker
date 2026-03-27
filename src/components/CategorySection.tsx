@@ -48,6 +48,7 @@ export default function CategorySection({
           {items.length > 0 && (
             <div className="list-header-row">
               <span className="list-col-title">名称</span>
+              <span className="list-col-status">状态</span>
               <span className="list-col-desc">简介</span>
               <span className="list-col-rating">评分</span>
               <span className="list-col-date">日期</span>

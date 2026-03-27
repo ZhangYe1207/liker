@@ -1,9 +1,14 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import type { Item, Category } from './types'
-import { loadData, saveData } from './store'
+import type { Item, Category, LogbookEntry, ItemStatus } from './types'
+import { createDataLayer, type DataLayer } from './data'
+import { shouldMigrate, migrateToSupabase } from './data/migration'
+import { supabase } from './lib/supabase'
+import { useAuth } from './contexts/AuthContext'
 import CategorySection from './components/CategorySection'
 import AddEditModal from './components/AddEditModal'
+import AuthModal from './components/AuthModal'
 import SteamSyncModal from './components/SteamSyncModal'
+import LogbookView from './components/LogbookView'
 import { fetchRecs, needsTmdbKey } from './services/recommend'
 import type { ExternalItem } from './services/recommend'
 
@@ -17,8 +22,6 @@ function fuzzyMatch(text: string, query: string): boolean {
   return qi === q.length
 }
 
-const initialData = loadData()
-
 type ModalState = {
   open: boolean
   item?: Item | null
@@ -27,15 +30,61 @@ type ModalState = {
 }
 
 export default function App() {
-  const [items, setItems] = useState<Item[]>(initialData.items)
-  const [categories, setCategories] = useState<Category[]>(initialData.categories)
+  const { session, user, signOut } = useAuth()
+  const [items, setItems] = useState<Item[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
+  const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [modal, setModal] = useState<ModalState>({ open: false })
+  const [authModal, setAuthModal] = useState(false)
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
+  const [statusFilter, setStatusFilter] = useState<ItemStatus | ''>('')
+  const [showLogbook, setShowLogbook] = useState(false)
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
   const [sidebarWidth, setSidebarWidth] = useState(248)
   const [steamModal, setSteamModal] = useState(false)
   const isResizing = useRef(false)
+  const dlRef = useRef<DataLayer>(createDataLayer(session))
+
+  const [migrating, setMigrating] = useState(false)
+  const [migrationMsg, setMigrationMsg] = useState('')
+
+  useEffect(() => {
+    const dl = createDataLayer(session)
+    dlRef.current = dl
+    setLoading(true)
+
+    async function load() {
+      // Check if migration needed on first login
+      if (session?.user && supabase) {
+        const needsMigration = await shouldMigrate(supabase, session.user).catch(() => false)
+        if (needsMigration) {
+          setMigrating(true)
+          try {
+            const result = await migrateToSupabase(supabase, session.user, (p) => {
+              setMigrationMsg(`${p.step}… ${p.current}/${p.total}`)
+            })
+            setMigrationMsg(`迁移完成: ${result.categoryCount} 个分类, ${result.itemCount} 条记录`)
+            // Re-create DataLayer to read from Supabase after migration
+            const freshDl = createDataLayer(session)
+            dlRef.current = freshDl
+          } catch (err: any) {
+            setMigrationMsg(`迁移失败: ${err.message}`)
+          }
+          setTimeout(() => { setMigrating(false); setMigrationMsg('') }, 2000)
+        }
+      }
+
+      const [loadedItems, loadedCategories] = await Promise.all([
+        dlRef.current.getItems(),
+        dlRef.current.getCategories(),
+      ])
+      setItems(loadedItems)
+      setCategories(loadedCategories)
+      setLoading(false)
+    }
+    load()
+  }, [session])
 
   const handleMouseDown = useCallback(() => {
     isResizing.current = true
@@ -93,36 +142,54 @@ export default function App() {
       .finally(() => setRecLoading(false))
   }, [recSeed, categories.length, items.length])
 
-  function persist(newItems: Item[], newCategories: Category[]) {
-    setItems(newItems)
-    setCategories(newCategories)
-    saveData({ items: newItems, categories: newCategories })
+  function logStatusChange(itemId: string, fromStatus: ItemStatus | null, toStatus: ItemStatus) {
+    if (fromStatus === toStatus) return
+    const entry: LogbookEntry = {
+      id: crypto.randomUUID(),
+      itemId,
+      fromStatus,
+      toStatus,
+      createdAt: Date.now(),
+    }
+    dlRef.current.addLogEntry(entry)
   }
 
   function handleSave(data: Omit<Item, 'id' | 'createdAt'>) {
+    const dl = dlRef.current
     if (modal.item) {
-      const newItems = items.map((i) => i.id === modal.item!.id ? { ...i, ...data } : i)
-      persist(newItems, categories)
+      const oldStatus = modal.item.status ?? 'completed'
+      const newStatus = (data as any).status ?? 'completed'
+      const updated = { ...modal.item, ...data, updatedAt: Date.now() }
+      setItems(prev => prev.map(i => i.id === modal.item!.id ? updated : i))
+      dl.saveItem(updated)
+      logStatusChange(modal.item.id, oldStatus, newStatus)
     } else {
-      const newItem: Item = { ...data, id: crypto.randomUUID(), createdAt: Date.now() }
-      persist([...items, newItem], categories)
+      const newItem: Item = { ...data, id: crypto.randomUUID(), createdAt: Date.now(), updatedAt: Date.now() }
+      setItems(prev => [...prev, newItem])
+      dl.saveItem(newItem)
+      logStatusChange(newItem.id, null, (data as any).status ?? 'completed')
     }
   }
 
   function handleDeleteItem(id: string) {
-    persist(items.filter((i) => i.id !== id), categories)
+    setItems(prev => prev.filter(i => i.id !== id))
+    dlRef.current.deleteItem(id)
   }
 
   function handleAddCategory(name: string, icon: string): string {
     const id = crypto.randomUUID()
-    persist(items, [...categories, { id, name, icon }])
+    const category = { id, name, icon }
+    setCategories(prev => [...prev, category])
+    dlRef.current.saveCategory(category)
     return id
   }
 
   function handleDeleteCategory(id: string) {
     if (!confirm('删除分类将同时删除该分类下的所有记录，确定吗？')) return
     if (selectedCategoryId === id) setSelectedCategoryId(null)
-    persist(items.filter((i) => i.categoryId !== id), categories.filter((c) => c.id !== id))
+    setItems(prev => prev.filter(i => i.categoryId !== id))
+    setCategories(prev => prev.filter(c => c.id !== id))
+    dlRef.current.deleteCategory(id)
   }
 
   function handleSteamSync(newItems: Omit<Item, 'id' | 'createdAt'>[], _categoryId: string) {
@@ -130,8 +197,10 @@ export default function App() {
       ...data,
       id: crypto.randomUUID(),
       createdAt: Date.now(),
+      updatedAt: Date.now(),
     }))
-    persist([...items, ...created], categories)
+    setItems(prev => [...prev, ...created])
+    dlRef.current.bulkSaveItems(created)
   }
 
   const isSearching = search.trim().length > 0
@@ -146,6 +215,15 @@ export default function App() {
   const selectedCategory = categories.find(c => c.id === selectedCategoryId)
   const totalItems = items.length
   const avgRating = totalItems > 0 ? items.reduce((s, i) => s + i.rating, 0) / totalItems : 0
+
+  if (loading || migrating) {
+    return (
+      <div className="app-shell" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '8px' }}>
+        <span style={{ opacity: 0.5 }}>{migrating ? '正在迁移数据…' : '加载中…'}</span>
+        {migrationMsg && <span style={{ opacity: 0.4, fontSize: '13px' }}>{migrationMsg}</span>}
+      </div>
+    )
+  }
 
   return (
     <div className="app-shell">
@@ -171,12 +249,19 @@ export default function App() {
 
         <nav className="sidebar-nav">
           <button
-            className={`sidebar-nav-item ${!selectedCategoryId && !isSearching ? 'active' : ''}`}
-            onClick={() => { setSelectedCategoryId(null); setSearch('') }}
+            className={`sidebar-nav-item ${!selectedCategoryId && !isSearching && !showLogbook ? 'active' : ''}`}
+            onClick={() => { setSelectedCategoryId(null); setSearch(''); setShowLogbook(false) }}
           >
             <span className="nav-icon">⊞</span>
             <span className="nav-label">全部收藏</span>
             <span className="nav-count">{items.length}</span>
+          </button>
+          <button
+            className={`sidebar-nav-item ${showLogbook ? 'active' : ''}`}
+            onClick={() => { setShowLogbook(true); setSelectedCategoryId(null); setSearch('') }}
+          >
+            <span className="nav-icon">📋</span>
+            <span className="nav-label">活动记录</span>
           </button>
 
           {categories.length > 0 && (
@@ -196,8 +281,8 @@ export default function App() {
           {categories.map((cat) => (
             <button
               key={cat.id}
-              className={`sidebar-nav-item ${selectedCategoryId === cat.id && !isSearching ? 'active' : ''}`}
-              onClick={() => { setSelectedCategoryId(cat.id); setSearch('') }}
+              className={`sidebar-nav-item ${selectedCategoryId === cat.id && !isSearching && !showLogbook ? 'active' : ''}`}
+              onClick={() => { setSelectedCategoryId(cat.id); setSearch(''); setShowLogbook(false) }}
             >
               <span className="nav-icon">{cat.icon}</span>
               <span className="nav-label">{cat.name}</span>
@@ -221,6 +306,17 @@ export default function App() {
             <span>🎮</span>
             <span>Steam 同步</span>
           </button>
+          {user ? (
+            <button className="sidebar-auth-btn" onClick={() => signOut()}>
+              <span>👤</span>
+              <span>{user.email?.split('@')[0] ?? '已登录'}</span>
+            </button>
+          ) : (
+            <button className="sidebar-auth-btn" onClick={() => setAuthModal(true)}>
+              <span>☁</span>
+              <span>登录 / 注册</span>
+            </button>
+          )}
         </div>
       </aside>
 
@@ -228,7 +324,9 @@ export default function App() {
 
       {/* ── Main ── */}
       <main className="main-area">
-        {isSearching ? (
+        {showLogbook ? (
+          <LogbookView dataLayer={dlRef.current} items={items} categories={categories} />
+        ) : isSearching ? (
           /* Search results */
           <div className="page-search">
             <div className="page-header">
@@ -315,9 +413,24 @@ export default function App() {
               </div>
             </div>
 
+            <div className="status-filter-bar">
+              {(['', 'want', 'in_progress', 'completed', 'dropped'] as const).map(s => (
+                <button
+                  key={s}
+                  className={`pill ${statusFilter === s ? 'active' : ''}`}
+                  onClick={() => setStatusFilter(s)}
+                >
+                  {s === '' ? '全部' : s === 'want' ? '🔖 想看' : s === 'in_progress' ? '▶ 在看' : s === 'completed' ? '✓ 看过' : '✗ 搁置'}
+                </button>
+              ))}
+            </div>
+
             <CategorySection
               category={selectedCategory}
-              items={items.filter((i) => i.categoryId === selectedCategoryId)}
+              items={items.filter((i) =>
+                i.categoryId === selectedCategoryId &&
+                (!statusFilter || (i.status ?? 'completed') === statusFilter)
+              )}
               viewMode={viewMode}
               hideHeader
               onEditItem={(item) => setModal({ open: true, item })}
@@ -501,6 +614,10 @@ export default function App() {
           onAddCategory={handleAddCategory}
           onClose={() => setSteamModal(false)}
         />
+      )}
+
+      {authModal && (
+        <AuthModal onClose={() => setAuthModal(false)} />
       )}
     </div>
   )
