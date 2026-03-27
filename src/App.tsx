@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import type { Item, Category } from './types'
-import { createDataLayer } from './data'
+import type { Item, Category, LogbookEntry, ItemStatus } from './types'
+import { createDataLayer, type DataLayer } from './data'
 import { useAuth } from './contexts/AuthContext'
 import CategorySection from './components/CategorySection'
 import AddEditModal from './components/AddEditModal'
@@ -19,8 +19,6 @@ function fuzzyMatch(text: string, query: string): boolean {
   return qi === q.length
 }
 
-const dataLayer = createDataLayer()
-
 type ModalState = {
   open: boolean
   item?: Item | null
@@ -29,7 +27,7 @@ type ModalState = {
 }
 
 export default function App() {
-  const { user, signOut } = useAuth()
+  const { session, user, signOut } = useAuth()
   const [items, setItems] = useState<Item[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
@@ -41,14 +39,18 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(248)
   const [steamModal, setSteamModal] = useState(false)
   const isResizing = useRef(false)
+  const dlRef = useRef<DataLayer>(createDataLayer(session))
 
   useEffect(() => {
-    Promise.all([dataLayer.getItems(), dataLayer.getCategories()]).then(([loadedItems, loadedCategories]) => {
+    const dl = createDataLayer(session)
+    dlRef.current = dl
+    setLoading(true)
+    Promise.all([dl.getItems(), dl.getCategories()]).then(([loadedItems, loadedCategories]) => {
       setItems(loadedItems)
       setCategories(loadedCategories)
       setLoading(false)
     })
-  }, [])
+  }, [session])
 
   const handleMouseDown = useCallback(() => {
     isResizing.current = true
@@ -106,28 +108,45 @@ export default function App() {
       .finally(() => setRecLoading(false))
   }, [recSeed, categories.length, items.length])
 
+  function logStatusChange(itemId: string, fromStatus: ItemStatus | null, toStatus: ItemStatus) {
+    if (fromStatus === toStatus) return
+    const entry: LogbookEntry = {
+      id: crypto.randomUUID(),
+      itemId,
+      fromStatus,
+      toStatus,
+      createdAt: Date.now(),
+    }
+    dlRef.current.addLogEntry(entry)
+  }
+
   function handleSave(data: Omit<Item, 'id' | 'createdAt'>) {
+    const dl = dlRef.current
     if (modal.item) {
+      const oldStatus = modal.item.status ?? 'completed'
+      const newStatus = (data as any).status ?? 'completed'
       const updated = { ...modal.item, ...data, updatedAt: Date.now() }
       setItems(prev => prev.map(i => i.id === modal.item!.id ? updated : i))
-      dataLayer.saveItem(updated)
+      dl.saveItem(updated)
+      logStatusChange(modal.item.id, oldStatus, newStatus)
     } else {
       const newItem: Item = { ...data, id: crypto.randomUUID(), createdAt: Date.now(), updatedAt: Date.now() }
       setItems(prev => [...prev, newItem])
-      dataLayer.saveItem(newItem)
+      dl.saveItem(newItem)
+      logStatusChange(newItem.id, null, (data as any).status ?? 'completed')
     }
   }
 
   function handleDeleteItem(id: string) {
     setItems(prev => prev.filter(i => i.id !== id))
-    dataLayer.deleteItem(id)
+    dlRef.current.deleteItem(id)
   }
 
   function handleAddCategory(name: string, icon: string): string {
     const id = crypto.randomUUID()
     const category = { id, name, icon }
     setCategories(prev => [...prev, category])
-    dataLayer.saveCategory(category)
+    dlRef.current.saveCategory(category)
     return id
   }
 
@@ -136,7 +155,7 @@ export default function App() {
     if (selectedCategoryId === id) setSelectedCategoryId(null)
     setItems(prev => prev.filter(i => i.categoryId !== id))
     setCategories(prev => prev.filter(c => c.id !== id))
-    dataLayer.deleteCategory(id)
+    dlRef.current.deleteCategory(id)
   }
 
   function handleSteamSync(newItems: Omit<Item, 'id' | 'createdAt'>[], _categoryId: string) {
@@ -147,7 +166,7 @@ export default function App() {
       updatedAt: Date.now(),
     }))
     setItems(prev => [...prev, ...created])
-    dataLayer.bulkSaveItems(created)
+    dlRef.current.bulkSaveItems(created)
   }
 
   const isSearching = search.trim().length > 0

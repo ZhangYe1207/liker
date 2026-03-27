@@ -1,5 +1,8 @@
+import type { Session } from '@supabase/supabase-js'
 import type { Item, Category, LogbookEntry, ItemStatus } from '../types'
 import { LocalStorageDataLayer } from './localStorage'
+import { SupabaseDataLayer } from './supabase'
+import { supabase } from '../lib/supabase'
 
 export interface DataLayer {
   getItems(): Promise<Item[]>
@@ -14,7 +17,9 @@ export interface DataLayer {
   bulkSaveCategories(categories: Category[]): Promise<void>
 }
 
-export function createDataLayer(): DataLayer {
-  // Future: return SupabaseDataLayer when session exists
+export function createDataLayer(session?: Session | null): DataLayer {
+  if (session?.user && supabase) {
+    return new SupabaseDataLayer(supabase, session.user)
+  }
   return new LocalStorageDataLayer()
 }
