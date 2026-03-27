@@ -43,13 +43,11 @@ export default function ItemCard({ item, variant = 'card', onEdit, onDelete }: P
     return (
       <div className="list-item" onClick={() => onEdit(item)}>
         <span className="list-item-title">{item.title}</span>
-        <StatusBadge status={status} />
+        <span className="list-item-status"><StatusBadge status={status} /></span>
         <span className="list-item-desc">{item.description || '—'}</span>
-        {status === 'completed' && (
-          <span className="list-item-rating">
-            <StarRating value={item.rating} size={12} />
-          </span>
-        )}
+        <span className="list-item-rating">
+          {status === 'completed' && <StarRating value={item.rating} size={12} />}
+        </span>
         <span className="list-item-date">{formatDate(item.createdAt)}</span>
         <button
           className="list-item-delete"

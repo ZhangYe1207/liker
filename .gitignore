@@ -6,3 +6,4 @@ PLAN.md
 package-lock.json
 .claude/
 supabase/.temp/
+.vscode/
