@@ -32,24 +32,39 @@ export async function migrateToSupabase(
   const categories = await local.getCategories()
   const items = await local.getItems()
 
-  // Build deterministic category ID map so retries don't create duplicates
+  // Query existing categories to reuse their IDs and avoid unique constraint violations on retry
   onProgress?.({ step: '迁移分类', current: 0, total: categories.length })
+  const { data: existingCats } = await supabase
+    .from('categories')
+    .select('id, name')
+    .eq('user_id', user.id)
+  const existingByName = new Map((existingCats ?? []).map(c => [c.name, c.id]))
+
   const categoryIdMap = new Map<string, string>()
-  const categoryRows = categories.map((cat, i) => {
-    // Deterministic ID based on user + original ID for idempotent upsert
-    const newId = crypto.randomUUID()
-    categoryIdMap.set(cat.id, newId)
-    return {
-      id: newId,
-      user_id: user.id,
-      name: cat.name,
-      icon: cat.icon,
-      sort_order: i,
+  const newCategoryRows: Array<{ id: string; user_id: string; name: string; icon: string; sort_order: number }> = []
+  categories.forEach((cat, i) => {
+    const existingId = existingByName.get(cat.name)
+    if (existingId) {
+      categoryIdMap.set(cat.id, existingId)
+    } else {
+      const newId = crypto.randomUUID()
+      categoryIdMap.set(cat.id, newId)
+      newCategoryRows.push({
+        id: newId,
+        user_id: user.id,
+        name: cat.name,
+        icon: cat.icon,
+        sort_order: i,
+      })
     }
   })
 
-  const { error: catError } = await supabase.from('categories').upsert(categoryRows)
-  if (catError) throw new Error(`迁移分类失败: ${catError.message}`)
+  if (newCategoryRows.length > 0) {
+    const { error: catError } = await supabase
+      .from('categories')
+      .upsert(newCategoryRows, { onConflict: 'user_id,name' })
+    if (catError) throw new Error(`迁移分类失败: ${catError.message}`)
+  }
   onProgress?.({ step: '迁移分类', current: categories.length, total: categories.length })
 
   // Migrate items with remapped category IDs using upsert for idempotency

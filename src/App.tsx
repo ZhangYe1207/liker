@@ -217,6 +217,11 @@ export default function App() {
   }
 
   async function handleAddCategory(name: string, icon: string): Promise<string> {
+    const existing = categories.find(c => c.name.trim().toLowerCase() === name.trim().toLowerCase())
+    if (existing) {
+      showError('分类名称已存在')
+      return existing.id
+    }
     const id = crypto.randomUUID()
     const category = { id, name, icon }
     setCategories(prev => [...prev, category])
@@ -224,7 +229,7 @@ export default function App() {
       await dlRef.current.saveCategory(category)
     } catch (err) {
       setCategories(prev => prev.filter(c => c.id !== id))
-      showError('添加分类失败，请重试')
+      showError(err instanceof Error && err.message === '分类名称已存在' ? '分类名称已存在' : '添加分类失败，请重试')
     }
     return id
   }

@@ -110,7 +110,10 @@ export class SupabaseDataLayer implements DataLayer {
         name: category.name,
         icon: category.icon,
       })
-    if (error) throw error
+    if (error) {
+      if (error.code === '23505') throw new Error('分类名称已存在')
+      throw error
+    }
   }
 
   async deleteCategory(id: string): Promise<void> {
@@ -180,6 +183,9 @@ export class SupabaseDataLayer implements DataLayer {
     const { error } = await this.supabase
       .from('categories')
       .upsert(rows)
-    if (error) throw error
+    if (error) {
+      if (error.code === '23505') throw new Error('分类名称已存在')
+      throw error
+    }
   }
 }
