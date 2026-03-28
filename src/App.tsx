@@ -9,6 +9,7 @@ import AddEditModal from './components/AddEditModal'
 import AuthModal from './components/AuthModal'
 import SteamSyncModal from './components/SteamSyncModal'
 import LogbookView from './components/LogbookView'
+import StatsView from './components/StatsView'
 import { fetchRecs, needsTmdbKey } from './services/recommend'
 import type { ExternalItem } from './services/recommend'
 import { detectMediaType, getStatusConfig, getStatusOptions } from './utils/statusLabels'
@@ -41,6 +42,7 @@ export default function App() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<ItemStatus | ''>('')
   const [showLogbook, setShowLogbook] = useState(false)
+  const [showStats, setShowStats] = useState(false)
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
   const [sidebarWidth, setSidebarWidth] = useState(248)
   const [steamModal, setSteamModal] = useState(false)
@@ -327,8 +329,8 @@ export default function App() {
 
         <nav className="sidebar-nav">
           <button
-            className={`sidebar-nav-item ${!selectedCategoryId && !isSearching && !showLogbook ? 'active' : ''}`}
-            onClick={() => { setSelectedCategoryId(null); setSearch(''); setShowLogbook(false) }}
+            className={`sidebar-nav-item ${!selectedCategoryId && !isSearching && !showLogbook && !showStats ? 'active' : ''}`}
+            onClick={() => { setSelectedCategoryId(null); setSearch(''); setShowLogbook(false); setShowStats(false) }}
           >
             <span className="nav-icon">⊞</span>
             <span className="nav-label">全部收藏</span>
@@ -336,10 +338,17 @@ export default function App() {
           </button>
           <button
             className={`sidebar-nav-item ${showLogbook ? 'active' : ''}`}
-            onClick={() => { setShowLogbook(true); setSelectedCategoryId(null); setSearch('') }}
+            onClick={() => { setShowLogbook(true); setShowStats(false); setSelectedCategoryId(null); setSearch('') }}
           >
             <span className="nav-icon">📋</span>
             <span className="nav-label">活动记录</span>
+          </button>
+          <button
+            className={`sidebar-nav-item ${showStats ? 'active' : ''}`}
+            onClick={() => { setShowStats(true); setShowLogbook(false); setSelectedCategoryId(null); setSearch('') }}
+          >
+            <span className="nav-icon">📊</span>
+            <span className="nav-label">数据统计</span>
           </button>
 
           {categories.length > 0 && (
@@ -359,8 +368,8 @@ export default function App() {
           {categories.map((cat) => (
             <button
               key={cat.id}
-              className={`sidebar-nav-item ${selectedCategoryId === cat.id && !isSearching && !showLogbook ? 'active' : ''}`}
-              onClick={() => { setSelectedCategoryId(cat.id); setSearch(''); setShowLogbook(false) }}
+              className={`sidebar-nav-item ${selectedCategoryId === cat.id && !isSearching && !showLogbook && !showStats ? 'active' : ''}`}
+              onClick={() => { setSelectedCategoryId(cat.id); setSearch(''); setShowLogbook(false); setShowStats(false) }}
             >
               <span className="nav-icon">{cat.icon}</span>
               <span className="nav-label">{cat.name}</span>
@@ -393,6 +402,8 @@ export default function App() {
       <main className="main-area">
         {showLogbook ? (
           <LogbookView dataLayer={dlRef.current} items={items} categories={categories} />
+        ) : showStats ? (
+          <StatsView dataLayer={dlRef.current} items={items} categories={categories} />
         ) : isSearching ? (
           /* Search results */
           <div className="page-search">
