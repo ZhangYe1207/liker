@@ -1,6 +1,8 @@
 // Unified metadata search: NeoDB (primary), Bangumi (anime/manga fallback)
 // IGDB via Edge Function (games fallback, Unit 7)
 
+import { detectMediaType, type MediaType } from '../utils/statusLabels'
+
 export interface MetadataResult {
   externalId: string
   title: string
@@ -11,9 +13,7 @@ export interface MetadataResult {
   source: 'neodb' | 'bangumi' | 'igdb' | 'tmdb' | 'manual'
 }
 
-// ── Category detection (reused from recommend.ts pattern) ──
-
-type MediaCategory = 'book' | 'movie' | 'tv' | 'music' | 'game' | 'anime' | 'podcast' | 'unknown'
+// ── Category detection (delegated to shared utility) ──
 
 const NEODB_CATEGORY_MAP: Record<string, string> = {
   book: 'book',
@@ -23,17 +23,6 @@ const NEODB_CATEGORY_MAP: Record<string, string> = {
   game: 'game',
   anime: 'movie',
   podcast: 'podcast',
-}
-
-function detectCategory(name: string, icon: string): MediaCategory {
-  const s = (name + icon).toLowerCase()
-  if (/📖|📚|书|book|小说|novel|阅读|读/.test(s)) return 'book'
-  if (/🎬|🎥|🍿|电影|movie|film/.test(s)) return 'movie'
-  if (/📺|🎭|剧|tv|drama|series|动漫|番/.test(s)) return 'anime'
-  if (/🎵|🎶|🎸|🎹|音乐|music|歌|专辑/.test(s)) return 'music'
-  if (/🎮|🕹|游戏|game/.test(s)) return 'game'
-  if (/🎙|podcast|播客/.test(s)) return 'podcast'
-  return 'unknown'
 }
 
 // ── NeoDB search (no auth required) ──
@@ -68,7 +57,7 @@ const BANGUMI_TYPE_MAP: Record<string, number> = {
   music: 3,  // 音乐
 }
 
-async function searchBangumi(query: string, mediaCategory: MediaCategory): Promise<MetadataResult[]> {
+async function searchBangumi(query: string, mediaCategory: MediaType): Promise<MetadataResult[]> {
   const subjectType = BANGUMI_TYPE_MAP[mediaCategory]
   if (subjectType === undefined) return []
 
@@ -117,7 +106,7 @@ export async function searchMetadata(
   const trimmed = query.trim()
   if (!trimmed) return []
 
-  const mediaCategory = detectCategory(categoryName, categoryIcon)
+  const mediaCategory = detectMediaType(categoryName, categoryIcon)
   const neodbCategory = NEODB_CATEGORY_MAP[mediaCategory]
 
   // Primary: NeoDB
