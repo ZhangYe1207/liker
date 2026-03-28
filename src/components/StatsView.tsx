@@ -1,6 +1,5 @@
-import { useState, useEffect, useMemo } from 'react'
-import type { Item, Category, LogbookEntry } from '../types'
-import type { DataLayer } from '../data'
+import { useState, useMemo } from 'react'
+import type { Item, Category, ItemStatus } from '../types'
 import {
   type TimeRange,
   filterByTimeRange,
@@ -8,6 +7,7 @@ import {
   computeCategoryDistribution,
   computeRatingDistribution,
   computeStatusDistribution,
+  computeHeroMetrics,
   computeHighlights,
 } from '../utils/stats'
 import {
@@ -25,7 +25,6 @@ import {
 } from 'recharts'
 
 interface Props {
-  dataLayer: DataLayer
   items: Item[]
   categories: Category[]
 }
@@ -43,7 +42,7 @@ const CATEGORY_COLORS = [
   '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#6366f1',
 ]
 
-const STATUS_COLORS: Record<string, string> = {
+const STATUS_COLORS: Record<ItemStatus, string> = {
   want: '#3b82f6',
   in_progress: '#eab308',
   completed: '#22c55e',
@@ -52,18 +51,16 @@ const STATUS_COLORS: Record<string, string> = {
 
 const RATING_COLOR = '#f59e0b'
 
-export default function StatsView({ dataLayer, items, categories }: Props) {
-  const [timeRange, setTimeRange] = useState<TimeRange>('all')
-  const [_entries, setEntries] = useState<LogbookEntry[]>([])
-  const [loading, setLoading] = useState(true)
+const TOOLTIP_STYLE = {
+  background: '#fff',
+  border: '1px solid rgba(0,0,0,0.08)',
+  borderRadius: 10,
+  fontFamily: 'Outfit, sans-serif',
+  fontSize: 13,
+} as const
 
-  useEffect(() => {
-    setLoading(true)
-    dataLayer.getLogEntries()
-      .then(setEntries)
-      .catch(() => setEntries([]))
-      .finally(() => setLoading(false))
-  }, [dataLayer])
+export default function StatsView({ items, categories }: Props) {
+  const [timeRange, setTimeRange] = useState<TimeRange>('all')
 
   const filteredItems = useMemo(() => filterByTimeRange(items, timeRange), [items, timeRange])
 
@@ -71,24 +68,8 @@ export default function StatsView({ dataLayer, items, categories }: Props) {
   const categoryDist = useMemo(() => computeCategoryDistribution(filteredItems, categories), [filteredItems, categories])
   const ratingDist = useMemo(() => computeRatingDistribution(filteredItems), [filteredItems])
   const statusDist = useMemo(() => computeStatusDistribution(filteredItems), [filteredItems])
+  const hero = useMemo(() => computeHeroMetrics(filteredItems, categories), [filteredItems, categories])
   const highlights = useMemo(() => computeHighlights(filteredItems, categories), [filteredItems, categories])
-
-  // Hero metrics
-  const totalItems = filteredItems.length
-  const completedCount = filteredItems.filter(i => (i.status ?? 'completed') === 'completed').length
-  const rated = filteredItems.filter(i => i.rating > 0)
-  const avgRating = rated.length > 0 ? (rated.reduce((s, i) => s + i.rating, 0) / rated.length).toFixed(1) : '—'
-
-  const catCount = new Map<string, number>()
-  for (const item of filteredItems) {
-    catCount.set(item.categoryId, (catCount.get(item.categoryId) ?? 0) + 1)
-  }
-  const topCatId = [...catCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
-  const topCat = categories.find(c => c.id === topCatId)
-
-  if (loading) {
-    return <div className="stats-view"><div className="stats-empty">加载中…</div></div>
-  }
 
   return (
     <div className="stats-view">
@@ -110,19 +91,19 @@ export default function StatsView({ dataLayer, items, categories }: Props) {
       {/* Hero metrics */}
       <div className="stats-hero">
         <div className="stats-hero-card">
-          <span className="stats-hero-value">{totalItems}</span>
+          <span className="stats-hero-value">{hero.totalItems}</span>
           <span className="stats-hero-label">总条目</span>
         </div>
         <div className="stats-hero-card">
-          <span className="stats-hero-value">{completedCount}</span>
+          <span className="stats-hero-value">{hero.completedCount}</span>
           <span className="stats-hero-label">已完成</span>
         </div>
         <div className="stats-hero-card">
-          <span className="stats-hero-value">{avgRating}</span>
+          <span className="stats-hero-value">{hero.avgRating}</span>
           <span className="stats-hero-label">平均评分</span>
         </div>
         <div className="stats-hero-card">
-          <span className="stats-hero-value">{topCat ? `${topCat.icon} ${topCat.name}` : '—'}</span>
+          <span className="stats-hero-value">{hero.topCategory ? `${hero.topCategory.icon} ${hero.topCategory.name}` : '—'}</span>
           <span className="stats-hero-label">最活跃分类</span>
         </div>
       </div>
@@ -161,13 +142,7 @@ export default function StatsView({ dataLayer, items, categories }: Props) {
                     allowDecimals={false}
                   />
                   <Tooltip
-                    contentStyle={{
-                      background: '#fff',
-                      border: '1px solid rgba(0,0,0,0.08)',
-                      borderRadius: 10,
-                      fontFamily: 'Outfit, sans-serif',
-                      fontSize: 13,
-                    }}
+                    contentStyle={TOOLTIP_STYLE}
                   />
                   <Area
                     type="monotone"
@@ -208,13 +183,7 @@ export default function StatsView({ dataLayer, items, categories }: Props) {
                     </Pie>
                     <Tooltip
                       formatter={(value, name) => [`${value} 条`, String(name)]}
-                      contentStyle={{
-                        background: '#fff',
-                        border: '1px solid rgba(0,0,0,0.08)',
-                        borderRadius: 10,
-                        fontFamily: 'Outfit, sans-serif',
-                        fontSize: 13,
-                      }}
+                      contentStyle={TOOLTIP_STYLE}
                     />
                   </PieChart>
                 </ResponsiveContainer>
@@ -249,13 +218,7 @@ export default function StatsView({ dataLayer, items, categories }: Props) {
                   />
                   <Tooltip
                     formatter={(value) => [`${value} 条`, '数量']}
-                    contentStyle={{
-                      background: '#fff',
-                      border: '1px solid rgba(0,0,0,0.08)',
-                      borderRadius: 10,
-                      fontFamily: 'Outfit, sans-serif',
-                      fontSize: 13,
-                    }}
+                    contentStyle={TOOLTIP_STYLE}
                   />
                   <Bar
                     dataKey="count"

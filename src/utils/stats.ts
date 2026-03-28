@@ -1,4 +1,4 @@
-import type { Item, Category, LogbookEntry, ItemStatus } from '../types'
+import type { Item, Category, ItemStatus } from '../types'
 
 export type TimeRange = '30d' | 'month' | 'year' | 'all'
 
@@ -20,9 +20,16 @@ export interface RatingDistItem {
 }
 
 export interface StatusDistItem {
-  status: ItemStatus | 'unset'
+  status: ItemStatus
   count: number
   label: string
+}
+
+export interface HeroMetrics {
+  totalItems: number
+  completedCount: number
+  avgRating: string
+  topCategory: { icon: string; name: string } | null
 }
 
 export interface Highlight {
@@ -66,8 +73,7 @@ function formatMonth(ts: number): string {
 }
 
 export function computeTimeline(items: Item[], range: TimeRange): TimelinePoint[] {
-  const filtered = filterByTimeRange(items, range)
-  if (filtered.length === 0) return []
+  if (items.length === 0) return []
 
   const useDaily = range === '30d' || range === 'month'
 
@@ -80,19 +86,30 @@ export function computeTimeline(items: Item[], range: TimeRange): TimelinePoint[
     for (let t = start; t <= now; t += 24 * 60 * 60 * 1000) {
       buckets.set(formatDay(t), 0)
     }
-    for (const item of filtered) {
+    for (const item of items) {
       const key = formatDay(item.createdAt)
       buckets.set(key, (buckets.get(key) ?? 0) + 1)
     }
   } else {
     // Monthly aggregation
-    for (const item of filtered) {
+    for (const item of items) {
       const key = formatMonth(item.createdAt)
       buckets.set(key, (buckets.get(key) ?? 0) + 1)
     }
   }
 
-  return Array.from(buckets.entries()).map(([label, count]) => ({ label, count }))
+  const result = Array.from(buckets.entries()).map(([label, count]) => ({ label, count }))
+
+  // Sort monthly buckets chronologically (daily buckets are already ordered by pre-fill)
+  if (!useDaily) {
+    result.sort((a, b) => {
+      const [ay, am] = a.label.split('/').map(Number)
+      const [by, bm] = b.label.split('/').map(Number)
+      return ay !== by ? ay - by : am - bm
+    })
+  }
+
+  return result
 }
 
 // ── Distribution computations ──
@@ -143,6 +160,31 @@ export function computeStatusDistribution(items: Item[]): StatusDistItem[] {
   return statuses
     .filter(s => (countMap.get(s) ?? 0) > 0)
     .map(s => ({ status: s, count: countMap.get(s) ?? 0, label: labels[s] }))
+}
+
+// ── Hero metrics ──
+
+export function computeHeroMetrics(items: Item[], categories: Category[]): HeroMetrics {
+  const totalItems = items.length
+  const completedCount = items.filter(i => (i.status ?? 'completed') === 'completed').length
+  const rated = items.filter(i => i.rating > 0)
+  const avgRating = rated.length > 0
+    ? (rated.reduce((s, i) => s + i.rating, 0) / rated.length).toFixed(1)
+    : '—'
+
+  const catCount = new Map<string, number>()
+  for (const item of items) {
+    catCount.set(item.categoryId, (catCount.get(item.categoryId) ?? 0) + 1)
+  }
+  const topCatId = [...catCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
+  const topCat = categories.find(c => c.id === topCatId)
+
+  return {
+    totalItems,
+    completedCount,
+    avgRating,
+    topCategory: topCat ? { icon: topCat.icon, name: topCat.name } : null,
+  }
 }
 
 // ── Highlights ──

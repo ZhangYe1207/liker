@@ -283,6 +283,7 @@ export default function App() {
   const selectedCategory = categories.find(c => c.id === selectedCategoryId)
   const totalItems = items.length
   const avgRating = totalItems > 0 ? items.reduce((s, i) => s + i.rating, 0) / totalItems : 0
+  const sparklineData = useMemo(() => items.length > 5 ? computeTimeline(items, '30d') : [], [items])
 
   if (loading || migrating) {
     return (
@@ -405,7 +406,7 @@ export default function App() {
         {showLogbook ? (
           <LogbookView dataLayer={dlRef.current} items={items} categories={categories} />
         ) : showStats ? (
-          <StatsView dataLayer={dlRef.current} items={items} categories={categories} />
+          <StatsView items={items} categories={categories} />
         ) : isSearching ? (
           /* Search results */
           <div className="page-search">
@@ -548,31 +549,32 @@ export default function App() {
                   </div>
                 )}
               </div>
-              {items.length > 5 && (() => {
-                const sparkData = computeTimeline(items, '30d')
-                return sparkData.length > 1 ? (
-                  <div className="overview-sparkline">
-                    <ResponsiveContainer width="100%" height={40}>
-                      <AreaChart data={sparkData} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
-                        <defs>
-                          <linearGradient id="sparkGrad" x1="0" y1="0" x2="1" y2="0">
-                            <stop offset="0%" stopColor="#ff6b6b" stopOpacity={0.25} />
-                            <stop offset="100%" stopColor="#a855f7" stopOpacity={0.25} />
-                          </linearGradient>
-                        </defs>
-                        <Area
-                          type="monotone"
-                          dataKey="count"
-                          stroke="url(#lineGrad)"
-                          strokeWidth={1.5}
-                          fill="url(#sparkGrad)"
-                          animationDuration={800}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                ) : null
-              })()}
+              {sparklineData.length > 1 && (
+                <div className="overview-sparkline">
+                  <ResponsiveContainer width="100%" height={40}>
+                    <AreaChart data={sparklineData} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
+                      <defs>
+                        <linearGradient id="sparkGrad" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#ff6b6b" stopOpacity={0.25} />
+                          <stop offset="100%" stopColor="#a855f7" stopOpacity={0.25} />
+                        </linearGradient>
+                        <linearGradient id="sparkLineGrad" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#ff6b6b" />
+                          <stop offset="100%" stopColor="#a855f7" />
+                        </linearGradient>
+                      </defs>
+                      <Area
+                        type="monotone"
+                        dataKey="count"
+                        stroke="url(#sparkLineGrad)"
+                        strokeWidth={1.5}
+                        fill="url(#sparkGrad)"
+                        animationDuration={800}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </div>
 
             {categories.length === 0 ? (
