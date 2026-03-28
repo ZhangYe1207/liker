@@ -1,5 +1,6 @@
 import type { Category, Item } from '../types'
 import ItemCard from './ItemCard'
+import { detectMediaType } from '../utils/statusLabels'
 
 interface Props {
   category: Category
@@ -18,6 +19,7 @@ export default function CategorySection({
   onDeleteItem,
   hideHeader,
 }: Props) {
+  const mediaType = detectMediaType(category.name, category.icon)
   return (
     <section className="category-section">
       {!hideHeader && (
@@ -34,6 +36,7 @@ export default function CategorySection({
             <ItemCard
               key={item.id}
               item={item}
+              mediaType={mediaType}
               variant="card"
               onEdit={onEditItem}
               onDelete={onDeleteItem}
@@ -59,6 +62,7 @@ export default function CategorySection({
             <ItemCard
               key={item.id}
               item={item}
+              mediaType={mediaType}
               variant="list"
               onEdit={onEditItem}
               onDelete={onDeleteItem}

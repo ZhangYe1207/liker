@@ -1301,6 +1301,36 @@ body {
 
 .modal-actions { display: flex; gap: 10px; margin-top: 8px; }
 
+/* ── Duplicate Warning ── */
+.duplicate-warning {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #b89008;
+}
+.duplicate-warning-title { font-weight: 600; }
+.duplicate-warning-actions { display: flex; gap: 8px; margin-top: 8px; }
+.duplicate-warning-actions button {
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+.duplicate-warning-actions button:first-child {
+  background: rgba(234, 179, 8, 0.2);
+  color: #8b6c08;
+  border: 1px solid rgba(234, 179, 8, 0.4);
+}
+.duplicate-warning-actions button:last-child {
+  background: transparent;
+  color: var(--text-3);
+  border: 1px solid var(--card-border);
+}
+
 .btn-primary {
   flex: 1;
   padding: 13px;
@@ -1444,21 +1474,31 @@ body {
 }
 
 /* ── Auth UI ── */
-.sidebar-auth-btn {
+.sidebar-auth-section {
+  padding: 8px 14px 0;
+}
+
+.sidebar-auth-section .sidebar-auth-btn {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
   padding: 10px 16px;
-  border: none;
-  background: transparent;
-  color: var(--sb-text-dim);
+  border: 1px solid rgba(138, 132, 150, 0.3);
+  border-radius: 10px;
+  background: rgba(138, 132, 150, 0.08);
+  color: var(--sb-text);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
-  transition: color 0.15s;
+  transition: all 0.15s;
 }
-.sidebar-auth-btn:hover { color: var(--sb-text); }
+
+.sidebar-auth-section .sidebar-auth-btn:hover {
+  background: rgba(138, 132, 150, 0.15);
+  border-color: rgba(138, 132, 150, 0.5);
+  color: #e0dce6;
+}
 
 /* Auth Modal */
 .auth-modal { max-width: 380px; }

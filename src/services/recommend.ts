@@ -2,6 +2,8 @@
 // 电影：TMDB（免费，需要 Key → https://www.themoviedb.org/settings/api）
 // 音乐：iTunes Search API（免费，无需 Key）
 
+import { detectMediaType } from '../utils/statusLabels'
+
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY ?? ''
 
 export interface ExternalItem {
@@ -12,14 +14,6 @@ export interface ExternalItem {
   coverUrl?: string
   year?: number
   source: string
-}
-
-function detectType(name: string, icon: string) {
-  const s = (name + icon).toLowerCase()
-  if (/📖|📚|书|book|小说|novel/.test(s)) return 'book'
-  if (/🎬|🎥|🍿|电影|movie|film|剧/.test(s)) return 'movie'
-  if (/🎵|🎶|🎸|🎹|音乐|music|歌|专辑/.test(s)) return 'music'
-  return 'unknown'
 }
 
 async function searchBooks(query: string): Promise<ExternalItem[]> {
@@ -70,7 +64,7 @@ async function searchMusic(query: string): Promise<ExternalItem[]> {
 }
 
 export function needsTmdbKey(name: string, icon: string): boolean {
-  return detectType(name, icon) === 'movie' && !TMDB_API_KEY
+  return detectMediaType(name, icon) === 'movie' && !TMDB_API_KEY
 }
 
 export async function fetchRecs(
@@ -78,7 +72,7 @@ export async function fetchRecs(
   categoryIcon: string,
   seedTitles: string[],
 ): Promise<ExternalItem[]> {
-  const type = detectType(categoryName, categoryIcon)
+  const type = detectMediaType(categoryName, categoryIcon)
   const query = seedTitles[0] ?? categoryName
   switch (type) {
     case 'book':  return searchBooks(query)

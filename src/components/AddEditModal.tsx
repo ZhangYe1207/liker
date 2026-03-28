@@ -3,16 +3,15 @@ import type { Item, Category, ItemStatus } from '../types'
 import StarRating from './StarRating'
 import MetadataSearchResults from './MetadataSearchResults'
 import { searchMetadata, type MetadataResult } from '../services/metadata'
+import { detectMediaType, getStatusOptions } from '../utils/statusLabels'
 
-const STATUS_OPTIONS: { value: ItemStatus; label: string }[] = [
-  { value: 'completed', label: '✓ 看过' },
-  { value: 'in_progress', label: '▶ 在看' },
-  { value: 'want', label: '🔖 想看' },
-  { value: 'dropped', label: '✗ 搁置' },
-]
+function normalizeTitle(t: string): string {
+  return t.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/g, '')
+}
 
 interface Props {
   item?: Item | null
+  items: Item[]
   categories: Category[]
   defaultCategoryId?: string
   prefill?: { title: string; description?: string }
@@ -21,7 +20,7 @@ interface Props {
   onAddCategory: (name: string, icon: string) => string | Promise<string>
 }
 
-export default function AddEditModal({ item, categories, defaultCategoryId, prefill, onSave, onClose, onAddCategory }: Props) {
+export default function AddEditModal({ item, items, categories, defaultCategoryId, prefill, onSave, onClose, onAddCategory }: Props) {
   const [mode, setMode] = useState<'search' | 'manual'>(item ? 'manual' : 'search')
   const [title, setTitle] = useState(prefill?.title ?? '')
   const [description, setDescription] = useState(prefill?.description ?? '')
@@ -36,6 +35,7 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
   const [newCatName, setNewCatName] = useState('')
   const [newCatIcon, setNewCatIcon] = useState('⭐')
   const [showNewCat, setShowNewCat] = useState(false)
+  const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null)
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('')
@@ -89,8 +89,38 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
     setMode('manual') // Switch to form view with auto-filled data
   }
 
+  function checkDuplicate(): string | null {
+    const sameCategoryItems = items.filter(i => i.categoryId === categoryId && i.id !== item?.id)
+
+    // Check externalId + source exact match
+    if (externalId && source) {
+      const match = sameCategoryItems.find(i => i.externalId === externalId && i.source === source)
+      if (match) return match.title
+    }
+
+    // Check normalized title match
+    const normalizedCurrent = normalizeTitle(title)
+    if (normalizedCurrent) {
+      const match = sameCategoryItems.find(i => normalizeTitle(i.title) === normalizedCurrent)
+      if (match) return match.title
+    }
+
+    return null
+  }
+
   function handleSave() {
     if (!title.trim()) return
+
+    const duplicate = checkDuplicate()
+    if (duplicate) {
+      setDuplicateWarning(duplicate)
+      return
+    }
+
+    doSave()
+  }
+
+  function doSave() {
     onSave({
       title: title.trim(),
       description: description.trim(),
@@ -104,6 +134,11 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
       source: source || undefined,
     })
     onClose()
+  }
+
+  function handleForceAdd() {
+    setDuplicateWarning(null)
+    doSave()
   }
 
   async function handleAddCategory() {
@@ -144,7 +179,7 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
             <button
               key={c.id}
               className={`pill ${categoryId === c.id ? 'active' : ''}`}
-              onClick={() => setCategoryId(c.id)}
+              onClick={() => { setCategoryId(c.id); setDuplicateWarning(null) }}
             >
               {c.icon} {c.name}
             </button>
@@ -205,7 +240,7 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
             <input
               className="input"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => { setTitle(e.target.value); setDuplicateWarning(null) }}
               placeholder="请输入名称"
               autoFocus={mode === 'manual'}
             />
@@ -229,14 +264,14 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
 
             <label className="form-label">状态</label>
             <div className="status-selector">
-              {STATUS_OPTIONS.map((opt) => (
+              {getStatusOptions(selectedCategory ? detectMediaType(selectedCategory.name, selectedCategory.icon) : undefined).map((opt) => (
                 <button
                   key={opt.value}
                   type="button"
                   className={`pill ${status === opt.value ? 'active' : ''}`}
                   onClick={() => setStatus(opt.value)}
                 >
-                  {opt.label}
+                  {opt.icon} {opt.label}
                 </button>
               ))}
             </div>
@@ -246,6 +281,18 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
                 <label className="form-label">评分</label>
                 <StarRating value={rating} onChange={setRating} size={28} />
               </>
+            )}
+
+            {duplicateWarning && (
+              <div className="duplicate-warning">
+                <div className="duplicate-warning-title">
+                  该分类下已存在类似条目：「{duplicateWarning}」
+                </div>
+                <div className="duplicate-warning-actions">
+                  <button onClick={handleForceAdd}>仍然添加</button>
+                  <button onClick={() => setDuplicateWarning(null)}>取消</button>
+                </div>
+              </div>
             )}
 
             <div className="modal-actions">

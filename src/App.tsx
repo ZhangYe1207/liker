@@ -11,6 +11,7 @@ import SteamSyncModal from './components/SteamSyncModal'
 import LogbookView from './components/LogbookView'
 import { fetchRecs, needsTmdbKey } from './services/recommend'
 import type { ExternalItem } from './services/recommend'
+import { detectMediaType, getStatusConfig, getStatusOptions } from './utils/statusLabels'
 
 function fuzzyMatch(text: string, query: string): boolean {
   const t = text.toLowerCase()
@@ -297,6 +298,20 @@ export default function App() {
           <span className="sidebar-brand-text">我的喜好</span>
         </div>
 
+        <div className="sidebar-auth-section">
+          {user ? (
+            <button className="sidebar-auth-btn" onClick={() => signOut()}>
+              <span>👤</span>
+              <span>{user.email?.split('@')[0] ?? '已登录'}</span>
+            </button>
+          ) : (
+            <button className="sidebar-auth-btn" onClick={() => setAuthModal(true)}>
+              <span>☁</span>
+              <span>云同步 · 登录 / 注册</span>
+            </button>
+          )}
+        </div>
+
         <div className="sidebar-search-wrap">
           <span className="sidebar-search-icon">⌕</span>
           <input
@@ -369,17 +384,6 @@ export default function App() {
             <span>🎮</span>
             <span>Steam 同步</span>
           </button>
-          {user ? (
-            <button className="sidebar-auth-btn" onClick={() => signOut()}>
-              <span>👤</span>
-              <span>{user.email?.split('@')[0] ?? '已登录'}</span>
-            </button>
-          ) : (
-            <button className="sidebar-auth-btn" onClick={() => setAuthModal(true)}>
-              <span>☁</span>
-              <span>登录 / 注册</span>
-            </button>
-          )}
         </div>
       </aside>
 
@@ -477,15 +481,21 @@ export default function App() {
             </div>
 
             <div className="status-filter-bar">
-              {(['', 'want', 'in_progress', 'completed', 'dropped'] as const).map(s => (
-                <button
-                  key={s}
-                  className={`pill ${statusFilter === s ? 'active' : ''}`}
-                  onClick={() => setStatusFilter(s)}
-                >
-                  {s === '' ? '全部' : s === 'want' ? '🔖 想看' : s === 'in_progress' ? '▶ 在看' : s === 'completed' ? '✓ 看过' : '✗ 搁置'}
-                </button>
-              ))}
+              {(() => {
+                const mt = selectedCategory ? detectMediaType(selectedCategory.name, selectedCategory.icon) : undefined
+                return (['', 'want', 'in_progress', 'completed', 'dropped'] as const).map(s => {
+                  const cfg = s ? getStatusConfig(s, mt) : null
+                  return (
+                    <button
+                      key={s}
+                      className={`pill ${statusFilter === s ? 'active' : ''}`}
+                      onClick={() => setStatusFilter(s)}
+                    >
+                      {cfg ? `${cfg.icon} ${cfg.label}` : '全部'}
+                    </button>
+                  )
+                })
+              })()}
             </div>
 
             <CategorySection
@@ -660,6 +670,7 @@ export default function App() {
       {modal.open && (
         <AddEditModal
           item={modal.item}
+          items={items}
           categories={categories}
           defaultCategoryId={modal.defaultCategoryId}
           prefill={modal.prefill}

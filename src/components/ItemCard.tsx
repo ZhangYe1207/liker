@@ -2,9 +2,11 @@ import { useState } from 'react'
 import type { Item } from '../types'
 import StarRating from './StarRating'
 import StatusBadge from './StatusBadge'
+import type { MediaType } from '../utils/statusLabels'
 
 interface Props {
   item: Item
+  mediaType?: MediaType
   variant?: 'card' | 'list'
   onEdit: (item: Item) => void
   onDelete: (id: string) => void
@@ -18,7 +20,7 @@ function formatDate(ts: number): string {
   })
 }
 
-export default function ItemCard({ item, variant = 'card', onEdit, onDelete }: Props) {
+export default function ItemCard({ item, mediaType, variant = 'card', onEdit, onDelete }: Props) {
   const [pendingDelete, setPendingDelete] = useState(false)
 
   if (variant === 'list') {
@@ -43,7 +45,7 @@ export default function ItemCard({ item, variant = 'card', onEdit, onDelete }: P
     return (
       <div className="list-item" onClick={() => onEdit(item)}>
         <span className="list-item-title">{item.title}</span>
-        <span className="list-item-status"><StatusBadge status={status} /></span>
+        <span className="list-item-status"><StatusBadge status={status} mediaType={mediaType} /></span>
         <span className="list-item-desc">{item.description || '—'}</span>
         <span className="list-item-rating">
           {status === 'completed' && <StarRating value={item.rating} size={12} />}
@@ -72,7 +74,7 @@ export default function ItemCard({ item, variant = 'card', onEdit, onDelete }: P
         <span className="item-card-title">{item.title}</span>
         {cardStatus === 'completed'
           ? <StarRating value={item.rating} size={13} />
-          : <StatusBadge status={cardStatus} />
+          : <StatusBadge status={cardStatus} mediaType={mediaType} />
         }
       </div>
 
@@ -82,7 +84,7 @@ export default function ItemCard({ item, variant = 'card', onEdit, onDelete }: P
 
       <div className="item-card-footer">
         <span className="item-card-date">{formatDate(item.createdAt)}</span>
-        {cardStatus === 'completed' && <StatusBadge status={cardStatus} />}
+        {cardStatus === 'completed' && <StatusBadge status={cardStatus} mediaType={mediaType} />}
       </div>
 
       {pendingDelete ? (
