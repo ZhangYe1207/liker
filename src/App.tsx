@@ -9,6 +9,9 @@ import AddEditModal from './components/AddEditModal'
 import AuthModal from './components/AuthModal'
 import SteamSyncModal from './components/SteamSyncModal'
 import LogbookView from './components/LogbookView'
+import StatsView from './components/StatsView'
+import { computeTimeline } from './utils/stats'
+import { ResponsiveContainer, AreaChart, Area } from 'recharts'
 import { fetchRecs, needsTmdbKey } from './services/recommend'
 import type { ExternalItem } from './services/recommend'
 import { detectMediaType, getStatusConfig, getStatusOptions } from './utils/statusLabels'
@@ -41,6 +44,7 @@ export default function App() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<ItemStatus | ''>('')
   const [showLogbook, setShowLogbook] = useState(false)
+  const [showStats, setShowStats] = useState(false)
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
   const [sidebarWidth, setSidebarWidth] = useState(248)
   const [steamModal, setSteamModal] = useState(false)
@@ -279,6 +283,7 @@ export default function App() {
   const selectedCategory = categories.find(c => c.id === selectedCategoryId)
   const totalItems = items.length
   const avgRating = totalItems > 0 ? items.reduce((s, i) => s + i.rating, 0) / totalItems : 0
+  const sparklineData = useMemo(() => items.length > 5 ? computeTimeline(items, '30d') : [], [items])
 
   if (loading || migrating) {
     return (
@@ -327,8 +332,8 @@ export default function App() {
 
         <nav className="sidebar-nav">
           <button
-            className={`sidebar-nav-item ${!selectedCategoryId && !isSearching && !showLogbook ? 'active' : ''}`}
-            onClick={() => { setSelectedCategoryId(null); setSearch(''); setShowLogbook(false) }}
+            className={`sidebar-nav-item ${!selectedCategoryId && !isSearching && !showLogbook && !showStats ? 'active' : ''}`}
+            onClick={() => { setSelectedCategoryId(null); setSearch(''); setShowLogbook(false); setShowStats(false) }}
           >
             <span className="nav-icon">⊞</span>
             <span className="nav-label">全部收藏</span>
@@ -336,10 +341,17 @@ export default function App() {
           </button>
           <button
             className={`sidebar-nav-item ${showLogbook ? 'active' : ''}`}
-            onClick={() => { setShowLogbook(true); setSelectedCategoryId(null); setSearch('') }}
+            onClick={() => { setShowLogbook(true); setShowStats(false); setSelectedCategoryId(null); setSearch('') }}
           >
             <span className="nav-icon">📋</span>
             <span className="nav-label">活动记录</span>
+          </button>
+          <button
+            className={`sidebar-nav-item ${showStats ? 'active' : ''}`}
+            onClick={() => { setShowStats(true); setShowLogbook(false); setSelectedCategoryId(null); setSearch('') }}
+          >
+            <span className="nav-icon">📊</span>
+            <span className="nav-label">数据统计</span>
           </button>
 
           {categories.length > 0 && (
@@ -359,8 +371,8 @@ export default function App() {
           {categories.map((cat) => (
             <button
               key={cat.id}
-              className={`sidebar-nav-item ${selectedCategoryId === cat.id && !isSearching && !showLogbook ? 'active' : ''}`}
-              onClick={() => { setSelectedCategoryId(cat.id); setSearch(''); setShowLogbook(false) }}
+              className={`sidebar-nav-item ${selectedCategoryId === cat.id && !isSearching && !showLogbook && !showStats ? 'active' : ''}`}
+              onClick={() => { setSelectedCategoryId(cat.id); setSearch(''); setShowLogbook(false); setShowStats(false) }}
             >
               <span className="nav-icon">{cat.icon}</span>
               <span className="nav-label">{cat.name}</span>
@@ -393,6 +405,8 @@ export default function App() {
       <main className="main-area">
         {showLogbook ? (
           <LogbookView dataLayer={dlRef.current} items={items} categories={categories} />
+        ) : showStats ? (
+          <StatsView items={items} categories={categories} />
         ) : isSearching ? (
           /* Search results */
           <div className="page-search">
@@ -535,6 +549,32 @@ export default function App() {
                   </div>
                 )}
               </div>
+              {sparklineData.length > 1 && (
+                <div className="overview-sparkline">
+                  <ResponsiveContainer width="100%" height={40}>
+                    <AreaChart data={sparklineData} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
+                      <defs>
+                        <linearGradient id="sparkGrad" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#ff6b6b" stopOpacity={0.25} />
+                          <stop offset="100%" stopColor="#a855f7" stopOpacity={0.25} />
+                        </linearGradient>
+                        <linearGradient id="sparkLineGrad" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#ff6b6b" />
+                          <stop offset="100%" stopColor="#a855f7" />
+                        </linearGradient>
+                      </defs>
+                      <Area
+                        type="monotone"
+                        dataKey="count"
+                        stroke="url(#sparkLineGrad)"
+                        strokeWidth={1.5}
+                        fill="url(#sparkGrad)"
+                        animationDuration={800}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </div>
 
             {categories.length === 0 ? (
@@ -549,6 +589,8 @@ export default function App() {
                   const avg = catItems.length
                     ? catItems.reduce((s, i) => s + i.rating, 0) / catItems.length
                     : 0
+                  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime()
+                  const monthlyNew = catItems.filter(i => i.createdAt >= monthStart).length
                   const recent = [...catItems]
                     .sort((a, b) => b.createdAt - a.createdAt)
                     .slice(0, 3)
@@ -564,7 +606,7 @@ export default function App() {
                       </div>
                       <h2 className="occ-name">{cat.name}</h2>
                       <div className="occ-stats">
-                        <span className="occ-count">{catItems.length} 条</span>
+                        <span className="occ-count">{catItems.length} 条{monthlyNew > 0 && <span className="occ-monthly">+{monthlyNew}</span>}</span>
                         {avg > 0 && (
                           <span className="occ-stars">{'★'.repeat(Math.round(avg))}</span>
                         )}
