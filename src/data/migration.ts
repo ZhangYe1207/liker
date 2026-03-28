@@ -6,9 +6,8 @@ const MIGRATION_FLAG = 'liker_migrated'
 export async function shouldMigrate(supabase: SupabaseClient, user: User): Promise<boolean> {
   if (localStorage.getItem(MIGRATION_FLAG)) return false
 
-  const local = new LocalStorageDataLayer()
-  const localItems = await local.getItems()
-  if (localItems.length === 0) return false
+  // Check if localStorage actually has user-saved data (not just defaults)
+  if (!localStorage.getItem('liker_data')) return false
 
   const { count } = await supabase
     .from('items')
@@ -33,26 +32,42 @@ export async function migrateToSupabase(
   const categories = await local.getCategories()
   const items = await local.getItems()
 
-  // Migrate categories
+  // Query existing categories to reuse their IDs and avoid unique constraint violations on retry
   onProgress?.({ step: '迁移分类', current: 0, total: categories.length })
+  const { data: existingCats } = await supabase
+    .from('categories')
+    .select('id, name')
+    .eq('user_id', user.id)
+  const existingByName = new Map((existingCats ?? []).map(c => [c.name, c.id]))
+
   const categoryIdMap = new Map<string, string>()
-  for (let i = 0; i < categories.length; i++) {
-    const cat = categories[i]
-    const newId = crypto.randomUUID()
-    categoryIdMap.set(cat.id, newId)
+  const newCategoryRows: Array<{ id: string; user_id: string; name: string; icon: string; sort_order: number }> = []
+  categories.forEach((cat, i) => {
+    const existingId = existingByName.get(cat.name)
+    if (existingId) {
+      categoryIdMap.set(cat.id, existingId)
+    } else {
+      const newId = crypto.randomUUID()
+      categoryIdMap.set(cat.id, newId)
+      newCategoryRows.push({
+        id: newId,
+        user_id: user.id,
+        name: cat.name,
+        icon: cat.icon,
+        sort_order: i,
+      })
+    }
+  })
 
-    const { error } = await supabase.from('categories').insert({
-      id: newId,
-      user_id: user.id,
-      name: cat.name,
-      icon: cat.icon,
-      sort_order: i,
-    })
-    if (error) throw new Error(`迁移分类失败: ${error.message}`)
-    onProgress?.({ step: '迁移分类', current: i + 1, total: categories.length })
+  if (newCategoryRows.length > 0) {
+    const { error: catError } = await supabase
+      .from('categories')
+      .upsert(newCategoryRows, { onConflict: 'user_id,name' })
+    if (catError) throw new Error(`迁移分类失败: ${catError.message}`)
   }
+  onProgress?.({ step: '迁移分类', current: categories.length, total: categories.length })
 
-  // Migrate items with remapped category IDs
+  // Migrate items with remapped category IDs using upsert for idempotency
   onProgress?.({ step: '迁移记录', current: 0, total: items.length })
   const batchSize = 50
   for (let i = 0; i < items.length; i += batchSize) {
@@ -74,7 +89,7 @@ export async function migrateToSupabase(
       updated_at: new Date(item.updatedAt ?? item.createdAt).toISOString(),
     }))
 
-    const { error } = await supabase.from('items').insert(batch)
+    const { error } = await supabase.from('items').upsert(batch)
     if (error) throw new Error(`迁移记录失败: ${error.message}`)
     onProgress?.({ step: '迁移记录', current: Math.min(i + batchSize, items.length), total: items.length })
   }

@@ -48,8 +48,10 @@ export default function App() {
 
   const [migrating, setMigrating] = useState(false)
   const [migrationMsg, setMigrationMsg] = useState('')
+  const [errorMsg, setErrorMsg] = useState('')
 
   useEffect(() => {
+    let cancelled = false
     const dl = createDataLayer(session)
     dlRef.current = dl
     setLoading(true)
@@ -58,32 +60,45 @@ export default function App() {
       // Check if migration needed on first login
       if (session?.user && supabase) {
         const needsMigration = await shouldMigrate(supabase, session.user).catch(() => false)
+        if (cancelled) return
         if (needsMigration) {
           setMigrating(true)
           try {
             const result = await migrateToSupabase(supabase, session.user, (p) => {
-              setMigrationMsg(`${p.step}… ${p.current}/${p.total}`)
+              if (!cancelled) setMigrationMsg(`${p.step}… ${p.current}/${p.total}`)
             })
+            if (cancelled) return
             setMigrationMsg(`迁移完成: ${result.categoryCount} 个分类, ${result.itemCount} 条记录`)
             // Re-create DataLayer to read from Supabase after migration
             const freshDl = createDataLayer(session)
             dlRef.current = freshDl
           } catch (err: any) {
+            if (cancelled) return
             setMigrationMsg(`迁移失败: ${err.message}`)
           }
-          setTimeout(() => { setMigrating(false); setMigrationMsg('') }, 2000)
+          setTimeout(() => { if (!cancelled) { setMigrating(false); setMigrationMsg('') } }, 2000)
         }
       }
 
-      const [loadedItems, loadedCategories] = await Promise.all([
-        dlRef.current.getItems(),
-        dlRef.current.getCategories(),
-      ])
-      setItems(loadedItems)
-      setCategories(loadedCategories)
-      setLoading(false)
+      try {
+        const [loadedItems, loadedCategories] = await Promise.all([
+          dlRef.current.getItems(),
+          dlRef.current.getCategories(),
+        ])
+        if (cancelled) return
+        setItems(loadedItems)
+        setCategories(loadedCategories)
+      } catch (err: any) {
+        if (cancelled) return
+        console.error('Failed to load data:', err)
+        setErrorMsg('数据加载失败，请刷新页面重试')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     }
     load()
+
+    return () => { cancelled = true }
   }, [session])
 
   const handleMouseDown = useCallback(() => {
@@ -142,7 +157,12 @@ export default function App() {
       .finally(() => setRecLoading(false))
   }, [recSeed, categories.length, items.length])
 
-  function logStatusChange(itemId: string, fromStatus: ItemStatus | null, toStatus: ItemStatus) {
+  function showError(msg: string) {
+    setErrorMsg(msg)
+    setTimeout(() => setErrorMsg(''), 4000)
+  }
+
+  async function logStatusChange(itemId: string, fromStatus: ItemStatus | null, toStatus: ItemStatus) {
     if (fromStatus === toStatus) return
     const entry: LogbookEntry = {
       id: crypto.randomUUID(),
@@ -151,48 +171,86 @@ export default function App() {
       toStatus,
       createdAt: Date.now(),
     }
-    dlRef.current.addLogEntry(entry)
+    try {
+      await dlRef.current.addLogEntry(entry)
+    } catch (err) {
+      console.error('Failed to log status change:', err)
+    }
   }
 
-  function handleSave(data: Omit<Item, 'id' | 'createdAt'>) {
+  async function handleSave(data: Omit<Item, 'id' | 'createdAt'>) {
     const dl = dlRef.current
     if (modal.item) {
       const oldStatus = modal.item.status ?? 'completed'
       const newStatus = (data as any).status ?? 'completed'
       const updated = { ...modal.item, ...data, updatedAt: Date.now() }
       setItems(prev => prev.map(i => i.id === modal.item!.id ? updated : i))
-      dl.saveItem(updated)
-      logStatusChange(modal.item.id, oldStatus, newStatus)
+      try {
+        await dl.saveItem(updated)
+        await logStatusChange(modal.item.id, oldStatus, newStatus)
+      } catch (err) {
+        setItems(prev => prev.map(i => i.id === modal.item!.id ? modal.item! : i))
+        showError('保存失败，请重试')
+      }
     } else {
       const newItem: Item = { ...data, id: crypto.randomUUID(), createdAt: Date.now(), updatedAt: Date.now() }
       setItems(prev => [...prev, newItem])
-      dl.saveItem(newItem)
-      logStatusChange(newItem.id, null, (data as any).status ?? 'completed')
+      try {
+        await dl.saveItem(newItem)
+        await logStatusChange(newItem.id, null, (data as any).status ?? 'completed')
+      } catch (err) {
+        setItems(prev => prev.filter(i => i.id !== newItem.id))
+        showError('保存失败，请重试')
+      }
     }
   }
 
-  function handleDeleteItem(id: string) {
-    setItems(prev => prev.filter(i => i.id !== id))
-    dlRef.current.deleteItem(id)
+  async function handleDeleteItem(id: string) {
+    const prev = items
+    setItems(p => p.filter(i => i.id !== id))
+    try {
+      await dlRef.current.deleteItem(id)
+    } catch (err) {
+      setItems(prev)
+      showError('删除失败，请重试')
+    }
   }
 
-  function handleAddCategory(name: string, icon: string): string {
+  async function handleAddCategory(name: string, icon: string): Promise<string> {
+    const existing = categories.find(c => c.name.trim().toLowerCase() === name.trim().toLowerCase())
+    if (existing) {
+      showError('分类名称已存在')
+      return existing.id
+    }
     const id = crypto.randomUUID()
     const category = { id, name, icon }
     setCategories(prev => [...prev, category])
-    dlRef.current.saveCategory(category)
+    try {
+      await dlRef.current.saveCategory(category)
+    } catch (err) {
+      setCategories(prev => prev.filter(c => c.id !== id))
+      showError(err instanceof Error && err.message === '分类名称已存在' ? '分类名称已存在' : '添加分类失败，请重试')
+    }
     return id
   }
 
-  function handleDeleteCategory(id: string) {
+  async function handleDeleteCategory(id: string) {
     if (!confirm('删除分类将同时删除该分类下的所有记录，确定吗？')) return
     if (selectedCategoryId === id) setSelectedCategoryId(null)
+    const prevItems = items
+    const prevCategories = categories
     setItems(prev => prev.filter(i => i.categoryId !== id))
     setCategories(prev => prev.filter(c => c.id !== id))
-    dlRef.current.deleteCategory(id)
+    try {
+      await dlRef.current.deleteCategory(id)
+    } catch (err) {
+      setItems(prevItems)
+      setCategories(prevCategories)
+      showError('删除分类失败，请重试')
+    }
   }
 
-  function handleSteamSync(newItems: Omit<Item, 'id' | 'createdAt'>[], _categoryId: string) {
+  async function handleSteamSync(newItems: Omit<Item, 'id' | 'createdAt'>[], _categoryId: string) {
     const created: Item[] = newItems.map((data) => ({
       ...data,
       id: crypto.randomUUID(),
@@ -200,7 +258,12 @@ export default function App() {
       updatedAt: Date.now(),
     }))
     setItems(prev => [...prev, ...created])
-    dlRef.current.bulkSaveItems(created)
+    try {
+      await dlRef.current.bulkSaveItems(created)
+    } catch (err) {
+      setItems(prev => prev.filter(i => !created.some(c => c.id === i.id)))
+      showError('Steam 同步保存失败，请重试')
+    }
   }
 
   const isSearching = search.trim().length > 0
@@ -618,6 +681,12 @@ export default function App() {
 
       {authModal && (
         <AuthModal onClose={() => setAuthModal(false)} />
+      )}
+
+      {errorMsg && (
+        <div className="error-toast" onClick={() => setErrorMsg('')}>
+          {errorMsg}
+        </div>
       )}
     </div>
   )

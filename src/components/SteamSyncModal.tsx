@@ -13,7 +13,7 @@ interface Props {
   items: Item[]
   categories: Category[]
   onSync: (newItems: Omit<Item, 'id' | 'createdAt'>[], categoryId: string) => void
-  onAddCategory: (name: string, icon: string) => string
+  onAddCategory: (name: string, icon: string) => string | Promise<string>
   onClose: () => void
 }
 
@@ -51,7 +51,7 @@ export default function SteamSyncModal({ items, categories, onSync, onAddCategor
       if (gameCat) {
         catId = gameCat.id
       } else {
-        catId = onAddCategory('游戏', '🎮')
+        catId = await onAddCategory('游戏', '🎮')
       }
 
       // Filter out existing games

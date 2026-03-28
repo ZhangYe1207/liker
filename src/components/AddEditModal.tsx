@@ -18,7 +18,7 @@ interface Props {
   prefill?: { title: string; description?: string }
   onSave: (data: Omit<Item, 'id' | 'createdAt'>) => void
   onClose: () => void
-  onAddCategory: (name: string, icon: string) => string
+  onAddCategory: (name: string, icon: string) => string | Promise<string>
 }
 
 export default function AddEditModal({ item, categories, defaultCategoryId, prefill, onSave, onClose, onAddCategory }: Props) {
@@ -106,9 +106,9 @@ export default function AddEditModal({ item, categories, defaultCategoryId, pref
     onClose()
   }
 
-  function handleAddCategory() {
+  async function handleAddCategory() {
     if (!newCatName.trim()) return
-    const id = onAddCategory(newCatName.trim(), newCatIcon)
+    const id = await onAddCategory(newCatName.trim(), newCatIcon)
     setCategoryId(id)
     setNewCatName('')
     setNewCatIcon('⭐')
