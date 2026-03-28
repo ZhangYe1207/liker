@@ -10,6 +10,8 @@ import AuthModal from './components/AuthModal'
 import SteamSyncModal from './components/SteamSyncModal'
 import LogbookView from './components/LogbookView'
 import StatsView from './components/StatsView'
+import { computeTimeline } from './utils/stats'
+import { ResponsiveContainer, AreaChart, Area } from 'recharts'
 import { fetchRecs, needsTmdbKey } from './services/recommend'
 import type { ExternalItem } from './services/recommend'
 import { detectMediaType, getStatusConfig, getStatusOptions } from './utils/statusLabels'
@@ -546,6 +548,31 @@ export default function App() {
                   </div>
                 )}
               </div>
+              {items.length > 5 && (() => {
+                const sparkData = computeTimeline(items, '30d')
+                return sparkData.length > 1 ? (
+                  <div className="overview-sparkline">
+                    <ResponsiveContainer width="100%" height={40}>
+                      <AreaChart data={sparkData} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
+                        <defs>
+                          <linearGradient id="sparkGrad" x1="0" y1="0" x2="1" y2="0">
+                            <stop offset="0%" stopColor="#ff6b6b" stopOpacity={0.25} />
+                            <stop offset="100%" stopColor="#a855f7" stopOpacity={0.25} />
+                          </linearGradient>
+                        </defs>
+                        <Area
+                          type="monotone"
+                          dataKey="count"
+                          stroke="url(#lineGrad)"
+                          strokeWidth={1.5}
+                          fill="url(#sparkGrad)"
+                          animationDuration={800}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : null
+              })()}
             </div>
 
             {categories.length === 0 ? (
@@ -560,6 +587,8 @@ export default function App() {
                   const avg = catItems.length
                     ? catItems.reduce((s, i) => s + i.rating, 0) / catItems.length
                     : 0
+                  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime()
+                  const monthlyNew = catItems.filter(i => i.createdAt >= monthStart).length
                   const recent = [...catItems]
                     .sort((a, b) => b.createdAt - a.createdAt)
                     .slice(0, 3)
@@ -575,7 +604,7 @@ export default function App() {
                       </div>
                       <h2 className="occ-name">{cat.name}</h2>
                       <div className="occ-stats">
-                        <span className="occ-count">{catItems.length} 条</span>
+                        <span className="occ-count">{catItems.length} 条{monthlyNew > 0 && <span className="occ-monthly">+{monthlyNew}</span>}</span>
                         {avg > 0 && (
                           <span className="occ-stars">{'★'.repeat(Math.round(avg))}</span>
                         )}
