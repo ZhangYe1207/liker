@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import type { Item, Category, ItemStatus } from '../types'
+import { useTheme } from '../contexts/ThemeContext'
 import {
   type TimeRange,
   filterByTimeRange,
@@ -51,15 +52,16 @@ const STATUS_COLORS: Record<ItemStatus, string> = {
 
 const RATING_COLOR = '#f59e0b'
 
-const TOOLTIP_STYLE = {
-  background: '#fff',
-  border: '1px solid rgba(0,0,0,0.08)',
-  borderRadius: 10,
-  fontFamily: 'Outfit, sans-serif',
-  fontSize: 13,
-} as const
-
 export default function StatsView({ items, categories }: Props) {
+  const { chartColors } = useTheme()
+
+  const tooltipStyle = useMemo(() => ({
+    background: chartColors.tooltipBg,
+    border: `1px solid ${chartColors.tooltipBorder}`,
+    borderRadius: 10,
+    fontFamily: 'Outfit, sans-serif',
+    fontSize: 13,
+  }), [chartColors])
   const [timeRange, setTimeRange] = useState<TimeRange>('all')
 
   const filteredItems = useMemo(() => filterByTimeRange(items, timeRange), [items, timeRange])
@@ -120,29 +122,29 @@ export default function StatsView({ items, categories }: Props) {
                 <AreaChart data={timeline} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
                   <defs>
                     <linearGradient id="areaGrad" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#ff6b6b" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#a855f7" stopOpacity={0.3} />
+                      <stop offset="0%" stopColor={chartColors.gradientStart} stopOpacity={0.3} />
+                      <stop offset="100%" stopColor={chartColors.gradientEnd} stopOpacity={0.3} />
                     </linearGradient>
                     <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#ff6b6b" />
-                      <stop offset="100%" stopColor="#a855f7" />
+                      <stop offset="0%" stopColor={chartColors.gradientStart} />
+                      <stop offset="100%" stopColor={chartColors.gradientEnd} />
                     </linearGradient>
                   </defs>
                   <XAxis
                     dataKey="label"
-                    tick={{ fontSize: 11, fill: '#9993a8' }}
+                    tick={{ fontSize: 11, fill: chartColors.axisText }}
                     axisLine={false}
                     tickLine={false}
                     interval="preserveStartEnd"
                   />
                   <YAxis
-                    tick={{ fontSize: 11, fill: '#9993a8' }}
+                    tick={{ fontSize: 11, fill: chartColors.axisText }}
                     axisLine={false}
                     tickLine={false}
                     allowDecimals={false}
                   />
                   <Tooltip
-                    contentStyle={TOOLTIP_STYLE}
+                    contentStyle={tooltipStyle}
                   />
                   <Area
                     type="monotone"
@@ -183,7 +185,7 @@ export default function StatsView({ items, categories }: Props) {
                     </Pie>
                     <Tooltip
                       formatter={(value, name) => [`${value} 条`, String(name)]}
-                      contentStyle={TOOLTIP_STYLE}
+                      contentStyle={tooltipStyle}
                     />
                   </PieChart>
                 </ResponsiveContainer>
@@ -218,7 +220,7 @@ export default function StatsView({ items, categories }: Props) {
                   />
                   <Tooltip
                     formatter={(value) => [`${value} 条`, '数量']}
-                    contentStyle={TOOLTIP_STYLE}
+                    contentStyle={tooltipStyle}
                   />
                   <Bar
                     dataKey="count"

@@ -37,7 +37,7 @@ type ModalState = {
 
 export default function App() {
   const { session, user, signOut } = useAuth()
-  const { resolvedTheme } = useTheme()
+  const { chartColors } = useTheme()
   const [items, setItems] = useState<Item[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
@@ -569,12 +569,12 @@ export default function App() {
                     <AreaChart data={sparklineData} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
                       <defs>
                         <linearGradient id="sparkGrad" x1="0" y1="0" x2="1" y2="0">
-                          <stop offset="0%" stopColor="#ff6b6b" stopOpacity={0.25} />
-                          <stop offset="100%" stopColor="#a855f7" stopOpacity={0.25} />
+                          <stop offset="0%" stopColor={chartColors.gradientStart} stopOpacity={0.25} />
+                          <stop offset="100%" stopColor={chartColors.gradientEnd} stopOpacity={0.25} />
                         </linearGradient>
                         <linearGradient id="sparkLineGrad" x1="0" y1="0" x2="1" y2="0">
-                          <stop offset="0%" stopColor="#ff6b6b" />
-                          <stop offset="100%" stopColor="#a855f7" />
+                          <stop offset="0%" stopColor={chartColors.gradientStart} />
+                          <stop offset="100%" stopColor={chartColors.gradientEnd} />
                         </linearGradient>
                       </defs>
                       <Area
