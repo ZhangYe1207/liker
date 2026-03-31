@@ -10,6 +10,8 @@ import AuthModal from './components/AuthModal'
 import SteamSyncModal from './components/SteamSyncModal'
 import LogbookView from './components/LogbookView'
 import StatsView from './components/StatsView'
+import ThemePicker from './components/ThemePicker'
+import { useTheme } from './contexts/ThemeContext'
 import { computeTimeline } from './utils/stats'
 import { ResponsiveContainer, AreaChart, Area } from 'recharts'
 import { fetchRecs, needsTmdbKey } from './services/recommend'
@@ -35,6 +37,7 @@ type ModalState = {
 
 export default function App() {
   const { session, user, signOut } = useAuth()
+  const { resolvedTheme } = useTheme()
   const [items, setItems] = useState<Item[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
@@ -48,6 +51,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
   const [sidebarWidth, setSidebarWidth] = useState(248)
   const [steamModal, setSteamModal] = useState(false)
+  const [themePicker, setThemePicker] = useState(false)
   const isResizing = useRef(false)
   const dlRef = useRef<DataLayer>(createDataLayer(session))
 
@@ -396,6 +400,16 @@ export default function App() {
             <span>🎮</span>
             <span>Steam 同步</span>
           </button>
+          <div style={{ position: 'relative' }}>
+            <button
+              className="sidebar-theme-btn"
+              onClick={() => setThemePicker(v => !v)}
+            >
+              <span>🎨</span>
+              <span>主题</span>
+            </button>
+            {themePicker && <ThemePicker onClose={() => setThemePicker(false)} />}
+          </div>
         </div>
       </aside>
 
