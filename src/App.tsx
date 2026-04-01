@@ -11,6 +11,7 @@ import SteamSyncModal from './components/SteamSyncModal'
 import LogbookView from './components/LogbookView'
 import StatsView from './components/StatsView'
 import ThemePicker from './components/ThemePicker'
+import AIChatPanel from './components/AIChatPanel'
 import { useTheme } from './contexts/ThemeContext'
 import { computeTimeline } from './utils/stats'
 import { ResponsiveContainer, AreaChart, Area } from 'recharts'
@@ -52,6 +53,7 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(248)
   const [steamModal, setSteamModal] = useState(false)
   const [themePicker, setThemePicker] = useState(false)
+  const [showAIChat, setShowAIChat] = useState(false)
   const isResizing = useRef(false)
   const dlRef = useRef<DataLayer>(createDataLayer(session))
 
@@ -386,6 +388,13 @@ export default function App() {
         </nav>
 
         <div className="sidebar-footer">
+          <button
+            className="sidebar-ai-btn"
+            onClick={() => setShowAIChat(v => !v)}
+          >
+            <span>✦</span>
+            <span>AI 助手</span>
+          </button>
           <button
             className="sidebar-add-btn"
             onClick={() => setModal({ open: true, defaultCategoryId: selectedCategoryId ?? undefined })}
@@ -748,6 +757,15 @@ export default function App() {
 
       {authModal && (
         <AuthModal onClose={() => setAuthModal(false)} />
+      )}
+
+      {showAIChat && (
+        <AIChatPanel
+          onClose={() => setShowAIChat(false)}
+          onAddItem={(prefill) => {
+            setModal({ open: true, prefill: { title: prefill.title, description: prefill.description } })
+          }}
+        />
       )}
 
       {errorMsg && (
