@@ -32,6 +32,7 @@ export default function AddEditModal({ item, items, categories, defaultCategoryI
   const [genre, setGenre] = useState('')
   const [externalId, setExternalId] = useState('')
   const [source, setSource] = useState('')
+  const [review, setReview] = useState('')
   const [newCatName, setNewCatName] = useState('')
   const [newCatIcon, setNewCatIcon] = useState('⭐')
   const [showNewCat, setShowNewCat] = useState(false)
@@ -55,6 +56,7 @@ export default function AddEditModal({ item, items, categories, defaultCategoryI
       setGenre(item.genre ?? '')
       setExternalId(item.externalId ?? '')
       setSource(item.source ?? '')
+      setReview(item.review ?? '')
     }
   }, [item])
 
@@ -132,6 +134,7 @@ export default function AddEditModal({ item, items, categories, defaultCategoryI
       genre: genre || undefined,
       externalId: externalId || undefined,
       source: source || undefined,
+      review: review.trim() || undefined,
     })
     onClose()
   }
@@ -282,6 +285,15 @@ export default function AddEditModal({ item, items, categories, defaultCategoryI
                 <StarRating value={rating} onChange={setRating} size={28} />
               </>
             )}
+
+            <label className="form-label">评价</label>
+            <textarea
+              className="input textarea"
+              value={review}
+              onChange={(e) => setReview(e.target.value)}
+              placeholder="写下你的评价…（选填）"
+              rows={4}
+            />
 
             {duplicateWarning && (
               <div className="duplicate-warning">
