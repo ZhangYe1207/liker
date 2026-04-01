@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # --- Embedding ---
     EMBEDDING_PROVIDER: Literal["openai", "minimax"] = "openai"
 
+    # --- External APIs ---
+    TMDB_API_KEY: str = ""
+
     # --- CORS ---
     CORS_ORIGINS: str = Field(default="http://localhost:5173")
 
