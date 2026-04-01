@@ -28,10 +28,13 @@
 
 ## 项目简介
 
-- **React 18 + TypeScript + Vite**，纯前端，无服务端
-- 数据存 `localStorage`，外部 API：Open Library / TMDB / iTunes / Steam
+- **前端**：React 18 + TypeScript + Vite
+- **后端**：Python + FastAPI（`backend/` 目录）
+- **数据库**：Supabase PostgreSQL + pgvector（向量搜索）
+- **AI**：多 LLM Provider 抽象（Claude/OpenAI/DeepSeek/Kimi/MiniMax）+ RAG + Function Calling
+- **数据**：前端 CRUD 直连 Supabase（RLS），AI 功能走 FastAPI 后端
 - 样式：纯 CSS 变量，无 UI 库，字体：Cormorant Garamond（展示）+ Outfit（UI）
-- 详见 `PLAN.md`
+- 详见 `PLAN.md` 和 `README.md`
 
 ## 路径规则
 
