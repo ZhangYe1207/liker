@@ -7,3 +7,7 @@ package-lock.json
 .claude/
 supabase/.temp/
 .vscode/
+__pycache__/
+*.pyc
+backend/.venv/
+.pytest_cache/

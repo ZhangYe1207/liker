@@ -16,6 +16,7 @@ function toItem(row: any): Item {
     genre: row.genre ?? undefined,
     externalId: row.external_id ?? undefined,
     source: row.source ?? undefined,
+    review: row.review ?? undefined,
     metadata: row.metadata ?? undefined,
     updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : undefined,
   }
@@ -35,6 +36,7 @@ function toRow(item: Item, userId: string) {
     genre: item.genre ?? null,
     external_id: item.externalId ?? null,
     source: item.source ?? null,
+    review: item.review ?? '',
     metadata: item.metadata ?? {},
     created_at: new Date(item.createdAt).toISOString(),
     updated_at: new Date(item.updatedAt ?? item.createdAt).toISOString(),

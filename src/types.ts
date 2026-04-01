@@ -14,6 +14,7 @@ export interface Item {
   genre?: string
   externalId?: string
   source?: string
+  review?: string
   metadata?: Record<string, unknown>
   updatedAt?: number
 }
