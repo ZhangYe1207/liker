@@ -10,6 +10,8 @@ import AuthModal from './components/AuthModal'
 import SteamSyncModal from './components/SteamSyncModal'
 import LogbookView from './components/LogbookView'
 import StatsView from './components/StatsView'
+import ThemePicker from './components/ThemePicker'
+import { useTheme } from './contexts/ThemeContext'
 import { computeTimeline } from './utils/stats'
 import { ResponsiveContainer, AreaChart, Area } from 'recharts'
 import { fetchRecs, needsTmdbKey } from './services/recommend'
@@ -35,6 +37,7 @@ type ModalState = {
 
 export default function App() {
   const { session, user, signOut } = useAuth()
+  const { chartColors } = useTheme()
   const [items, setItems] = useState<Item[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
@@ -48,6 +51,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
   const [sidebarWidth, setSidebarWidth] = useState(248)
   const [steamModal, setSteamModal] = useState(false)
+  const [themePicker, setThemePicker] = useState(false)
   const isResizing = useRef(false)
   const dlRef = useRef<DataLayer>(createDataLayer(session))
 
@@ -396,6 +400,16 @@ export default function App() {
             <span>🎮</span>
             <span>Steam 同步</span>
           </button>
+          <div style={{ position: 'relative' }}>
+            <button
+              className="sidebar-theme-btn"
+              onClick={() => setThemePicker(v => !v)}
+            >
+              <span>🎨</span>
+              <span>主题</span>
+            </button>
+            {themePicker && <ThemePicker onClose={() => setThemePicker(false)} />}
+          </div>
         </div>
       </aside>
 
@@ -555,12 +569,12 @@ export default function App() {
                     <AreaChart data={sparklineData} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
                       <defs>
                         <linearGradient id="sparkGrad" x1="0" y1="0" x2="1" y2="0">
-                          <stop offset="0%" stopColor="#ff6b6b" stopOpacity={0.25} />
-                          <stop offset="100%" stopColor="#a855f7" stopOpacity={0.25} />
+                          <stop offset="0%" stopColor={chartColors.gradientStart} stopOpacity={0.25} />
+                          <stop offset="100%" stopColor={chartColors.gradientEnd} stopOpacity={0.25} />
                         </linearGradient>
                         <linearGradient id="sparkLineGrad" x1="0" y1="0" x2="1" y2="0">
-                          <stop offset="0%" stopColor="#ff6b6b" />
-                          <stop offset="100%" stopColor="#a855f7" />
+                          <stop offset="0%" stopColor={chartColors.gradientStart} />
+                          <stop offset="100%" stopColor={chartColors.gradientEnd} />
                         </linearGradient>
                       </defs>
                       <Area
