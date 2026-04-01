@@ -21,6 +21,7 @@ function normalizeItem(item: Item): Item {
   return {
     ...item,
     status: item.status ?? 'completed',
+    review: item.review ?? '',
     updatedAt: item.updatedAt ?? item.createdAt,
   }
 }
