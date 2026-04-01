@@ -1,24 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 from app.config import get_settings
-
-
-# ---------------------------------------------------------------------------
-# Response envelope
-# ---------------------------------------------------------------------------
-
-class ResponseEnvelope(BaseModel):
-    """Standard API response wrapper matching the frontend convention."""
-    data: Any = None
-    error: str | None = None
-    metadata: dict[str, Any] | None = None
+from app.schemas import ResponseEnvelope
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +43,11 @@ def create_app() -> FastAPI:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
+
+    # Routers ------------------------------------------------------------
+    from app.routers.embeddings import router as embeddings_router
+
+    app.include_router(embeddings_router)
 
     return app
 
