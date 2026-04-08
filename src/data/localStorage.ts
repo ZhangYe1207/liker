@@ -227,6 +227,68 @@ const defaultItems: Item[] = [
   },
 ]
 
+// ── Default logbook entries (derived from demo items) ──
+
+function generateDefaultLogbook(): LogbookEntry[] {
+  const entries: LogbookEntry[] = []
+  let seq = 0
+
+  for (const item of defaultItems) {
+    const status = item.status ?? 'completed'
+    const created = item.createdAt
+    const updated = item.updatedAt ?? created
+
+    if (status === 'want') {
+      entries.push({
+        id: `demo-log-${++seq}`, itemId: item.id,
+        fromStatus: null, toStatus: 'want',
+        createdAt: created,
+      })
+    } else if (status === 'in_progress') {
+      entries.push({
+        id: `demo-log-${++seq}`, itemId: item.id,
+        fromStatus: null, toStatus: 'want',
+        createdAt: created,
+      })
+      entries.push({
+        id: `demo-log-${++seq}`, itemId: item.id,
+        fromStatus: 'want', toStatus: 'in_progress',
+        createdAt: created + Math.round((updated - created) * 0.5),
+      })
+    } else if (status === 'completed') {
+      // Some items get a multi-step journey for variety
+      const span = updated - created
+      if (span > 3 * DAY) {
+        entries.push({
+          id: `demo-log-${++seq}`, itemId: item.id,
+          fromStatus: null, toStatus: 'want',
+          createdAt: created,
+        })
+        entries.push({
+          id: `demo-log-${++seq}`, itemId: item.id,
+          fromStatus: 'want', toStatus: 'in_progress',
+          createdAt: created + Math.round(span * 0.3),
+        })
+        entries.push({
+          id: `demo-log-${++seq}`, itemId: item.id,
+          fromStatus: 'in_progress', toStatus: 'completed',
+          createdAt: updated,
+        })
+      } else {
+        entries.push({
+          id: `demo-log-${++seq}`, itemId: item.id,
+          fromStatus: null, toStatus: 'completed',
+          createdAt: updated || created,
+        })
+      }
+    }
+  }
+
+  return entries
+}
+
+const defaultLogbookEntries = generateDefaultLogbook()
+
 function normalizeItem(item: Item): Item {
   return {
     ...item,
@@ -256,11 +318,11 @@ function saveRaw(items: Item[], categories: Category[]): void {
 
 function loadLogbook(): LogbookEntry[] {
   const raw = localStorage.getItem(LOGBOOK_KEY)
-  if (!raw) return []
+  if (!raw) return defaultLogbookEntries
   try {
     return JSON.parse(raw) as LogbookEntry[]
   } catch {
-    return []
+    return defaultLogbookEntries
   }
 }
 
