@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../hooks/useAuth'
 import { streamChat, streamSearch, type ChatMessage, type RecommendationItem } from '../services/ai'
 
 interface Props {

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useEffect, useState } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { syncEmbeddings } from '../services/ai'
@@ -26,7 +26,7 @@ interface AuthState {
   signOut: () => Promise<void>
 }
 
-const AuthContext = createContext<AuthState>({
+export const AuthContext = createContext<AuthState>({
   session: null,
   user: null,
   loading: true,
@@ -35,10 +35,6 @@ const AuthContext = createContext<AuthState>({
   signInWithOAuth: async () => {},
   signOut: async () => {},
 })
-
-export function useAuth() {
-  return useContext(AuthContext)
-}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
