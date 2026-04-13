@@ -2392,12 +2392,156 @@ html[data-theme="forest"] {
   border-bottom: 1px solid var(--card-border);
   flex-shrink: 0;
 }
+.ai-chat-title-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.ai-chat-title-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 10px;
+  margin: -4px -10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+  font-family: inherit;
+}
+.ai-chat-title-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.ai-chat-title-btn:disabled { cursor: default; opacity: 0.7; }
 .ai-chat-title {
   font-family: var(--font-d);
   font-size: 18px;
   font-weight: 600;
   color: var(--text);
   margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-chat-title-caret {
+  font-size: 12px;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+.ai-chat-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 300px;
+  max-height: 60vh;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  z-index: 110;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ai-chat-dropdown-new {
+  padding: 10px 14px;
+  border: none;
+  border-bottom: 1px solid var(--card-border);
+  background: transparent;
+  color: var(--coral);
+  font-size: 13px;
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.ai-chat-dropdown-new:hover { background: var(--tint-bg); }
+.ai-chat-dropdown-empty {
+  padding: 16px;
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+}
+.ai-chat-dropdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+}
+.ai-chat-dropdown-item {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  position: relative;
+}
+.ai-chat-dropdown-item.is-active .ai-chat-dropdown-title {
+  color: var(--coral);
+}
+.ai-chat-dropdown-item:hover { background: var(--tint-bg); }
+.ai-chat-dropdown-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+.ai-chat-dropdown-title {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.ai-chat-dropdown-time {
+  font-size: 11px;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+.ai-chat-dropdown-actions {
+  display: none;
+  gap: 2px;
+  padding-right: 4px;
+}
+.ai-chat-dropdown-item:hover .ai-chat-dropdown-actions {
+  display: flex;
+}
+.ai-chat-dropdown-action {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ai-chat-dropdown-action:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.ai-chat-dropdown-edit {
+  flex: 1;
+  margin: 4px 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--coral);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font-ui);
+  outline: none;
 }
 .ai-chat-close {
   background: none;
