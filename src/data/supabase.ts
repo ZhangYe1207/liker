@@ -1,5 +1,6 @@
 import type { SupabaseClient, User } from '@supabase/supabase-js'
-import type { Item, Category, LogbookEntry, ItemStatus } from '../types'
+import type { Item, Category, LogbookEntry, ItemStatus, Conversation } from '../types'
+import type { ChatMessage, RecommendationItem } from '../services/ai'
 import type { DataLayer } from './index'
 
 function toItem(row: any): Item {
@@ -16,6 +17,7 @@ function toItem(row: any): Item {
     genre: row.genre ?? undefined,
     externalId: row.external_id ?? undefined,
     source: row.source ?? undefined,
+    review: row.review ?? undefined,
     metadata: row.metadata ?? undefined,
     updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : undefined,
   }
@@ -35,6 +37,7 @@ function toRow(item: Item, userId: string) {
     genre: item.genre ?? null,
     external_id: item.externalId ?? null,
     source: item.source ?? null,
+    review: item.review ?? '',
     metadata: item.metadata ?? {},
     created_at: new Date(item.createdAt).toISOString(),
     updated_at: new Date(item.updatedAt ?? item.createdAt).toISOString(),
@@ -56,6 +59,24 @@ function toLogEntry(row: any): LogbookEntry {
     fromStatus: row.from_status,
     toStatus: row.to_status,
     createdAt: new Date(row.created_at).getTime(),
+  }
+}
+
+function toConversation(row: any): Conversation {
+  return {
+    id: row.id,
+    title: row.title,
+    createdAt: new Date(row.created_at).getTime(),
+    updatedAt: new Date(row.updated_at).getTime(),
+  }
+}
+
+function toChatMessage(row: any): ChatMessage {
+  return {
+    id: row.id,
+    role: row.role,
+    content: row.content,
+    recommendations: (row.recommendations ?? undefined) as RecommendationItem[] | undefined,
   }
 }
 
@@ -187,5 +208,48 @@ export class SupabaseDataLayer implements DataLayer {
       if (error.code === '23505') throw new Error('分类名称已存在')
       throw error
     }
+  }
+
+  // ── AI chat conversations ──
+
+  async listConversations(): Promise<Conversation[]> {
+    const { data, error } = await this.supabase
+      .from('conversations')
+      .select('*')
+      .eq('user_id', this.user.id)
+      .order('updated_at', { ascending: false })
+    if (error) throw error
+    return (data ?? []).map(toConversation)
+  }
+
+  async listMessages(conversationId: string): Promise<ChatMessage[]> {
+    const { data, error } = await this.supabase
+      .from('messages')
+      .select('*')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: true })
+    if (error) throw error
+    return (data ?? []).map(toChatMessage)
+  }
+
+  async renameConversation(id: string, title: string): Promise<Conversation> {
+    const { data, error } = await this.supabase
+      .from('conversations')
+      .update({ title })
+      .eq('id', id)
+      .eq('user_id', this.user.id)
+      .select()
+      .single()
+    if (error) throw error
+    return toConversation(data)
+  }
+
+  async deleteConversation(id: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('conversations')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', this.user.id)
+    if (error) throw error
   }
 }

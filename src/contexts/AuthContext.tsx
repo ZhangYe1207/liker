@@ -1,6 +1,20 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useEffect, useState } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
+import { syncEmbeddings } from '../services/ai'
+
+async function maybeAutoSyncEmbeddings(session: Session) {
+  const flagKey = `embeddings_synced_${session.user.id}`
+  if (sessionStorage.getItem(flagKey)) return
+  sessionStorage.setItem(flagKey, '1')
+  try {
+    const stats = await syncEmbeddings(session.access_token)
+    console.log('[embeddings] auto-sync done:', stats)
+  } catch (err) {
+    console.warn('[embeddings] auto-sync failed:', err)
+    sessionStorage.removeItem(flagKey)
+  }
+}
 
 interface AuthState {
   session: Session | null
@@ -12,7 +26,7 @@ interface AuthState {
   signOut: () => Promise<void>
 }
 
-const AuthContext = createContext<AuthState>({
+export const AuthContext = createContext<AuthState>({
   session: null,
   user: null,
   loading: true,
@@ -21,10 +35,6 @@ const AuthContext = createContext<AuthState>({
   signInWithOAuth: async () => {},
   signOut: async () => {},
 })
-
-export function useAuth() {
-  return useContext(AuthContext)
-}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
@@ -39,12 +49,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
       setLoading(false)
+      if (session) void maybeAutoSyncEmbeddings(session)
     }).catch(() => {
       setLoading(false)
     })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session)
+      if (event === 'SIGNED_IN' && session) void maybeAutoSyncEmbeddings(session)
     })
 
     return () => subscription.unsubscribe()
