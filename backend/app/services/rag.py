@@ -31,7 +31,7 @@ async def retrieve_context(
 
     Returns a tuple of (context_items, query_embedding).
     """
-    query_vectors = await embedding_provider.embed([query])
+    query_vectors = await embedding_provider.embed([query], query=True)
     query_embedding = query_vectors[0]
     matches = await similarity_search(db_client, user_id, query_embedding, limit)
 

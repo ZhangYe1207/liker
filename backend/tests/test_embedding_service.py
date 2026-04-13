@@ -75,9 +75,13 @@ FAKE_EMBEDDING = [0.1] * 1536
 
 
 def _mock_embedding_provider() -> MagicMock:
-    """Return a mock embedding provider whose embed() returns a fixed vector."""
+    """Return a mock embedding provider that echoes one vector per input text."""
     provider = MagicMock()
-    provider.embed = AsyncMock(return_value=[FAKE_EMBEDDING])
+
+    async def _embed(texts, *, query=False):
+        return [FAKE_EMBEDDING] * len(texts)
+
+    provider.embed = AsyncMock(side_effect=_embed)
     provider.dimensions = 1536
     return provider
 

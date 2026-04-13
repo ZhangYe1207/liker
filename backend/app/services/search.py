@@ -76,7 +76,7 @@ async def execute_search_collection(
 ) -> list[dict]:
     """Search user's collection via vector similarity."""
     keywords = arguments.get("keywords", "")
-    vectors = await embedding_provider.embed([keywords])
+    vectors = await embedding_provider.embed([keywords], query=True)
     matches = await similarity_search(db_client, user_id, vectors[0], limit=10)
 
     items = await get_user_items(db_client, user_id)

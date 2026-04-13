@@ -21,7 +21,10 @@ _CHAT_PROVIDERS = {
 
 _EMBEDDING_PROVIDERS = {
     "openai": lambda s: OpenAIEmbeddingProvider(api_key=s.OPENAI_API_KEY),
-    "minimax": lambda s: MiniMaxEmbeddingProvider(api_key=s.MINIMAX_API_KEY),
+    "minimax": lambda s: MiniMaxEmbeddingProvider(
+        api_key=s.MINIMAX_API_KEY,
+        group_id=s.MINIMAX_GROUP_ID,
+    ),
 }
 
 

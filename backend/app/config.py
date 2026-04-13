@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     KIMI_API_KEY: str = ""
     MINIMAX_API_KEY: str = ""
+    MINIMAX_GROUP_ID: str = ""
 
     # --- Embedding ---
     EMBEDDING_PROVIDER: Literal["openai", "minimax"] = "minimax"

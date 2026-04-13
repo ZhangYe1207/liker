@@ -12,5 +12,5 @@ class MiniMaxChatProvider(OpenAIChatProvider):
         super().__init__(
             api_key=api_key,
             model=model,
-            base_url="https://api.minimax.chat/v1",
+            base_url="https://api.minimaxi.com/v1",
         )
