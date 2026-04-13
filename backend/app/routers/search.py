@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.db.supabase_client import get_supabase_client
 from app.llm import create_chat_provider, create_embedding_provider
 from app.schemas import ResponseEnvelope
-from app.services.search import search_with_tools
+from app.services.search import search_with_tools, search_with_tools_persistent
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -21,6 +21,7 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
 class SearchRequest(BaseModel):
     query: str
     stream: bool = True
+    conversation_id: str | None = None
 
 
 @router.post("/search")
@@ -37,37 +38,34 @@ async def ai_search(
     if request.stream:
 
         async def event_generator():
-            result, recommendations = await search_with_tools(
+            events = search_with_tools_persistent(
                 chat_provider,
                 embedding_provider,
                 db_client,
                 user_id,
                 request.query,
-                stream=True,
+                request.conversation_id,
                 tmdb_api_key=tmdb_api_key,
             )
-            # First send recommendations as a special event
-            if recommendations:
-                yield (
-                    f"data: {json.dumps({'type': 'recommendations', 'items': recommendations}, ensure_ascii=False)}\n\n"
-                )
-            # Then stream the LLM response
-            async for chunk in result:
-                yield f"data: {json.dumps({'type': 'content', **chunk}, ensure_ascii=False)}\n\n"
+            async for event in events:
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(
             event_generator(), media_type="text/event-stream"
         )
-    else:
-        result, recommendations = await search_with_tools(
-            chat_provider,
-            embedding_provider,
-            db_client,
-            user_id,
-            request.query,
-            stream=False,
-            tmdb_api_key=tmdb_api_key,
-        )
-        return ResponseEnvelope(
-            data={"response": result, "recommendations": recommendations}
-        )
+
+    # Non-streaming path kept for ad-hoc callers and intentionally bypasses
+    # persistence — it's the only way to return the full recommendations array
+    # alongside the synthesised response.
+    result, recommendations = await search_with_tools(
+        chat_provider,
+        embedding_provider,
+        db_client,
+        user_id,
+        request.query,
+        stream=False,
+        tmdb_api_key=tmdb_api_key,
+    )
+    return ResponseEnvelope(
+        data={"response": result, "recommendations": recommendations}
+    )

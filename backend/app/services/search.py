@@ -8,6 +8,12 @@ from typing import AsyncIterator
 from app.db.embeddings import similarity_search
 from app.db.items import get_user_items
 from app.llm.protocols import ChatProvider, EmbeddingProvider
+from app.services.conversation_helpers import (
+    ensure_conversation,
+    load_history,
+    persist_assistant_message,
+    persist_user_message,
+)
 from app.services.external_apis import search_books, search_movies, search_music
 
 SEARCH_SYSTEM_PROMPT = """你是 Liker 的 AI 搜索助手。用户会用自然语言搜索内容。
@@ -222,3 +228,103 @@ async def search_with_tools(
     final_result = await chat_provider.chat(messages, stream=stream)
 
     return final_result, recommendations
+
+
+async def search_with_tools_persistent(
+    chat_provider: ChatProvider,
+    embedding_provider: EmbeddingProvider,
+    db_client: object,
+    user_id: str,
+    query: str,
+    conversation_id: str | None,
+    tmdb_api_key: str = "",
+):
+    """Streaming search-with-tools that persists to the conversations table.
+
+    Yields SSE-ready event dicts in this order:
+
+    1. ``{"type": "conversation", "id": "..."}`` — only when a new conversation
+       was lazily created for this request.
+    2. ``{"type": "recommendations", "items": [...]}`` — only when external
+       search produced cards (emitted before content so the frontend can
+       render placeholders).
+    3. ``{"type": "content", "content": "...", "done": bool}`` — one per LLM chunk.
+
+    The assistant message is persisted with ``recommendations`` attached so
+    the UI can rehydrate cards when loading history later.
+    """
+    conv_id, is_new = await ensure_conversation(
+        db_client, user_id, conversation_id, query
+    )
+    if is_new:
+        yield {"type": "conversation", "id": conv_id}
+
+    await persist_user_message(db_client, conv_id, query)
+
+    history = await load_history(db_client, conv_id)
+    prior_turns = history[:-1] if history else []
+
+    messages: list[dict] = [
+        {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
+        *prior_turns,
+        {"role": "user", "content": query},
+    ]
+
+    # Step 1: tool selection (non-streaming so we can inspect tool_calls)
+    result = await chat_provider.chat(messages, tools=TOOL_DEFINITIONS, stream=False)
+
+    tool_results: list[dict] = []
+    recommendations: list[dict] = []
+
+    if result.get("tool_calls"):
+        for tool_call in result["tool_calls"]:
+            name = tool_call["name"]
+            args = tool_call["arguments"]
+
+            if name == "search_collection":
+                tool_result = await execute_search_collection(
+                    embedding_provider, db_client, user_id, args
+                )
+                tool_results.append({"tool": name, "result": tool_result})
+            elif name == "search_external":
+                tool_result = await execute_search_external(args, tmdb_api_key)
+                recommendations.extend(tool_result)
+                tool_results.append({"tool": name, "result": tool_result})
+            elif name == "get_taste_profile":
+                tool_result = await execute_get_taste_profile(
+                    db_client, user_id, args
+                )
+                tool_results.append({"tool": name, "result": tool_result})
+
+    if recommendations:
+        yield {"type": "recommendations", "items": recommendations}
+
+    messages.append(
+        {
+            "role": "assistant",
+            "content": result.get("content", ""),
+            "tool_calls": result.get("tool_calls"),
+        }
+    )
+    messages.append(
+        {
+            "role": "user",
+            "content": f"工具返回结果：\n{json.dumps(tool_results, ensure_ascii=False, default=str)}",
+        }
+    )
+
+    # Step 2: stream synthesis
+    final_stream = await chat_provider.chat(messages, stream=True)
+    accumulated = ""
+    async for chunk in final_stream:
+        piece = chunk.get("content", "")
+        if piece:
+            accumulated += piece
+        yield {"type": "content", **chunk}
+
+    await persist_assistant_message(
+        db_client,
+        conv_id,
+        accumulated,
+        recommendations=recommendations or None,
+    )

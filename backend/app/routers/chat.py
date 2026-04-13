@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.db.supabase_client import get_supabase_client
 from app.llm import create_chat_provider, create_embedding_provider
 from app.schemas import ResponseEnvelope
-from app.services.rag import chat_with_rag
+from app.services.rag import chat_with_rag, chat_with_rag_persistent
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -21,6 +21,7 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
 class ChatRequest(BaseModel):
     message: str
     stream: bool = True
+    conversation_id: str | None = None
 
 
 @router.post("/chat")
@@ -39,27 +40,29 @@ async def ai_chat(
     if request.stream:
 
         async def event_generator():
-            result = await chat_with_rag(
+            events = chat_with_rag_persistent(
                 chat_provider,
                 embedding_provider,
                 db_client,
                 user_id,
                 request.message,
-                stream=True,
+                request.conversation_id,
             )
-            async for chunk in result:
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            async for event in events:
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(
             event_generator(), media_type="text/event-stream"
         )
-    else:
-        result = await chat_with_rag(
-            chat_provider,
-            embedding_provider,
-            db_client,
-            user_id,
-            request.message,
-            stream=False,
-        )
-        return ResponseEnvelope(data=result)
+
+    # Non-streaming path kept for ad-hoc callers (not wired into the UI)
+    # and intentionally bypasses persistence.
+    result = await chat_with_rag(
+        chat_provider,
+        embedding_provider,
+        db_client,
+        user_id,
+        request.message,
+        stream=False,
+    )
+    return ResponseEnvelope(data=result)

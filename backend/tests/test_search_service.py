@@ -794,34 +794,38 @@ class TestSearchEndpoint:
         """Streaming search should return text/event-stream."""
         token = _make_token()
 
-        async def _fake_stream():
-            yield {"content": "Hello", "done": False}
-            yield {"content": " world", "done": True}
+        events = [
+            {"type": "conversation", "id": "conv-new"},
+            {"type": "recommendations", "items": [{"title": "X"}]},
+            {"type": "content", "content": "Hello", "done": False},
+            {"type": "content", "content": " world", "done": True},
+        ]
 
-        mock_chat = MagicMock()
-        mock_chat.chat = AsyncMock(
-            side_effect=[
-                {"content": "Searching...", "tool_calls": None},
-                _fake_stream(),
-            ]
-        )
-        mock_chat.model_name = "test-model"
-        mock_embed = _mock_embedding_provider()
+        def _fake_persistent(*args, **kwargs):
+            async def _gen():
+                for event in events:
+                    yield event
+
+            return _gen()
 
         with (
             patch("app.auth.get_settings", _fake_get_settings),
             patch("app.routers.search.get_settings", _fake_get_settings),
             patch(
                 "app.routers.search.create_chat_provider",
-                return_value=mock_chat,
+                return_value=MagicMock(),
             ),
             patch(
                 "app.routers.search.create_embedding_provider",
-                return_value=mock_embed,
+                return_value=MagicMock(),
             ),
             patch(
                 "app.routers.search.get_supabase_client",
-                return_value=_mock_db_client(),
+                return_value=MagicMock(),
+            ),
+            patch(
+                "app.routers.search.search_with_tools_persistent",
+                side_effect=_fake_persistent,
             ),
         ):
             resp = await client.post(
@@ -839,8 +843,6 @@ class TestSearchEndpoint:
             for line in text.strip().split("\n")
             if line.startswith("data: ")
         ]
-        assert len(data_lines) >= 1
-        # Check that content chunks are present
-        for line in data_lines:
-            parsed = json.loads(line)
-            assert "type" in parsed
+        assert len(data_lines) == 4
+        types = [json.loads(line)["type"] for line in data_lines]
+        assert types == ["conversation", "recommendations", "content", "content"]

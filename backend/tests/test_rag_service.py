@@ -462,14 +462,18 @@ class TestChatEndpoint:
     @pytest.mark.asyncio
     async def test_stream_returns_event_stream(self, client):
         token = _make_token()
-        chunks = [
-            {"content": "你好", "done": False},
-            {"content": "", "done": True},
+        events = [
+            {"type": "conversation", "id": "new-conv-1"},
+            {"type": "content", "content": "你好", "done": False},
+            {"type": "content", "content": "", "done": True},
         ]
 
-        async def _fake_stream_iter():
-            for chunk in chunks:
-                yield chunk
+        def _fake_persistent(*args, **kwargs):
+            async def _gen():
+                for event in events:
+                    yield event
+
+            return _gen()
 
         with (
             patch("app.auth.get_settings", _fake_get_settings),
@@ -487,9 +491,8 @@ class TestChatEndpoint:
                 return_value=MagicMock(),
             ),
             patch(
-                "app.routers.chat.chat_with_rag",
-                new_callable=AsyncMock,
-                return_value=_fake_stream_iter(),
+                "app.routers.chat.chat_with_rag_persistent",
+                side_effect=_fake_persistent,
             ),
         ):
             resp = await client.post(
@@ -504,13 +507,16 @@ class TestChatEndpoint:
         # Parse SSE events from body
         body = resp.text
         lines = [l for l in body.strip().split("\n") if l.startswith("data: ")]
-        assert len(lines) == 2
+        assert len(lines) == 3
 
         first = json.loads(lines[0].removeprefix("data: "))
-        assert first["content"] == "你好"
-        assert first["done"] is False
+        assert first == {"type": "conversation", "id": "new-conv-1"}
 
-        last = json.loads(lines[1].removeprefix("data: "))
+        second = json.loads(lines[1].removeprefix("data: "))
+        assert second["type"] == "content"
+        assert second["content"] == "你好"
+
+        last = json.loads(lines[2].removeprefix("data: "))
         assert last["done"] is True
 
     @pytest.mark.asyncio
