@@ -70,10 +70,12 @@ def create_app() -> FastAPI:
     from app.routers.embeddings import router as embeddings_router
     from app.routers.chat import router as chat_router
     from app.routers.search import router as search_router
+    from app.routers.conversations import router as conversations_router
 
     app.include_router(embeddings_router)
     app.include_router(chat_router)
     app.include_router(search_router)
+    app.include_router(conversations_router)
 
     return app
 
