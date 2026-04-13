@@ -1,4 +1,5 @@
-import type { Item, Category, LogbookEntry, ItemStatus } from '../types'
+import type { Item, Category, LogbookEntry, ItemStatus, Conversation } from '../types'
+import type { ChatMessage } from '../services/ai'
 import type { DataLayer } from './index'
 
 const DATA_KEY = 'liker_data'
@@ -406,5 +407,21 @@ export class LocalStorageDataLayer implements DataLayer {
       existing.set(cat.id, cat)
     }
     saveRaw(data.items, [...existing.values()])
+  }
+
+  async listConversations(): Promise<Conversation[]> {
+    throw new Error('AI 助手需要登录后使用')
+  }
+
+  async listMessages(_conversationId: string): Promise<ChatMessage[]> {
+    throw new Error('AI 助手需要登录后使用')
+  }
+
+  async renameConversation(_id: string, _title: string): Promise<Conversation> {
+    throw new Error('AI 助手需要登录后使用')
+  }
+
+  async deleteConversation(_id: string): Promise<void> {
+    throw new Error('AI 助手需要登录后使用')
   }
 }

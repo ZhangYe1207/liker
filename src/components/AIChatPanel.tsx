@@ -56,6 +56,7 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
         }
       } else {
         for await (const chunk of streamChat(message, session.access_token)) {
+          if (chunk.type !== 'content') continue
           assistantContent += chunk.content || ''
           setMessages(prev => {
             const updated = [...prev]

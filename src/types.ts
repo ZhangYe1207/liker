@@ -37,3 +37,10 @@ export interface LogbookEntry {
   toStatus: ItemStatus
   createdAt: number
 }
+
+export interface Conversation {
+  id: string
+  title: string
+  updatedAt: number
+  createdAt: number
+}
