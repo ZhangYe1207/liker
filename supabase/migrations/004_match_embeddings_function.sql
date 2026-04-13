@@ -1,6 +1,6 @@
 -- SQL function for pgvector similarity search via Supabase RPC
 CREATE OR REPLACE FUNCTION match_item_embeddings(
-  query_embedding vector(1536),
+  query_embedding vector(1024),
   match_user_id uuid,
   match_count int DEFAULT 10
 )

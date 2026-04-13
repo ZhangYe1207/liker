@@ -58,7 +58,7 @@ A full-stack application for managing personal collections (books, movies, music
 | Database | Supabase PostgreSQL + pgvector |
 | Auth | Supabase Auth (JWT) |
 | LLM | Multi-provider: Claude, OpenAI, DeepSeek, Kimi, MiniMax |
-| Embedding | OpenAI text-embedding-3-small (1536d) |
+| Embedding | MiniMax embo-01 (1024d) |
 | Styling | CSS Variables (no UI library) |
 
 ## AI Features
@@ -96,7 +96,7 @@ Custom `ChatProvider` / `EmbeddingProvider` protocol with factory pattern. Each 
 | Function calling | Single-turn with tool definitions | Sufficient for search/recommendation; multi-turn agent adds complexity without proportional value |
 | LLM abstraction | Custom protocols, not litellm | Demonstrates architecture skills for interviews |
 | Embedding update | Real-time on save | ~200-500ms latency acceptable for <10K items; avoids Celery/Redis |
-| Embedding provider | Separate from chat provider | Claude has no embedding API; embedding defaults to OpenAI text-embedding-3-small |
+| Embedding provider | Separate from chat provider | Claude has no embedding API; embedding defaults to MiniMax embo-01 (better for Chinese-heavy content, mainland-direct) |
 | Auth | JWT passthrough | Frontend sends Supabase JWT; backend validates and extracts user_id |
 | SSE over WebSocket | Server-Sent Events | Simpler for one-directional streaming; native browser support |
 
@@ -140,8 +140,9 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 SUPABASE_JWT_SECRET=your-jwt-secret
 LLM_PROVIDER=claude          # claude|openai|deepseek|kimi|minimax
-EMBEDDING_PROVIDER=openai    # openai|minimax
-OPENAI_API_KEY=              # Required for embeddings
+EMBEDDING_PROVIDER=minimax   # openai|minimax
+MINIMAX_API_KEY=             # Required if EMBEDDING_PROVIDER=minimax
+OPENAI_API_KEY=              # Required if EMBEDDING_PROVIDER=openai
 CLAUDE_API_KEY=              # Required if LLM_PROVIDER=claude
 ```
 

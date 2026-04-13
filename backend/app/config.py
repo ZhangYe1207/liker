@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     MINIMAX_API_KEY: str = ""
 
     # --- Embedding ---
-    EMBEDDING_PROVIDER: Literal["openai", "minimax"] = "openai"
+    EMBEDDING_PROVIDER: Literal["openai", "minimax"] = "minimax"
 
     # --- External APIs ---
     TMDB_API_KEY: str = ""

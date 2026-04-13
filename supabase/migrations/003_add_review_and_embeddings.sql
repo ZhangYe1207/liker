@@ -18,7 +18,7 @@ CREATE TABLE public.item_embeddings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   item_id uuid NOT NULL REFERENCES public.items(id) ON DELETE CASCADE,
   user_id uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-  embedding vector(1536),
+  embedding vector(1024),
   content_hash TEXT NOT NULL,
   updated_at timestamptz DEFAULT now(),
   CONSTRAINT uq_item_embeddings_item_id UNIQUE (item_id)

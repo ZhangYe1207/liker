@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
@@ -7,6 +9,25 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.schemas import ResponseEnvelope
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pre-warm JWKS so the first authenticated request doesn't pay the 6s TLS handshake.
+    settings = get_settings()
+    if settings.SUPABASE_URL:
+        from app.auth import _fetch_jwks
+        print("[startup] Warming JWKS cache...", flush=True)
+        try:
+            _fetch_jwks()
+            print("[startup] JWKS cache warmed", flush=True)
+        except Exception as exc:
+            print(f"[startup] JWKS pre-warm skipped: {exc}", flush=True)
+    else:
+        print("[startup] SUPABASE_URL empty, skipping JWKS pre-warm", flush=True)
+    yield
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +43,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
+        lifespan=lifespan,
     )
 
     # CORS ---------------------------------------------------------------

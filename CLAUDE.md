@@ -9,6 +9,7 @@
 - 涉及 UI 改动时，Plan 阶段必须包含高保真布局描述或 HTML/CSS 原型
 - UI 改动不得导致 `types.ts` / `store.ts` 大幅变化
 - 用户审批 Plan 后才进入下一步
+- **每份 Plan 必须同时产出一份对应的验收清单**，放在 `docs/acceptance-tests/`，命名规则：把 plan 文件名的 `-plan.md` 改为 `-acceptance.md`（例：`2026-03-30-001-feat-xxx-plan.md` → `2026-03-30-001-feat-xxx-acceptance.md`）。文档含：环境准备步骤、按 Phase 组织的可勾选验收用例、与 Plan SC 的对应关系、常见坑位
 
 ### 2. Work（`/ce:work`）
 - 按 Plan 执行，每完成一个逻辑单元提交一次

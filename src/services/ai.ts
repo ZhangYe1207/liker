@@ -65,6 +65,24 @@ export async function* streamChat(
   }
 }
 
+export interface EmbeddingSyncStats {
+  total: number
+  updated: number
+  skipped: number
+}
+
+export async function syncEmbeddings(token: string): Promise<EmbeddingSyncStats> {
+  const response = await fetch(`${AI_BASE_URL}/api/embeddings/sync`, {
+    method: 'POST',
+    headers: getAuthHeaders(token),
+  })
+  if (!response.ok) {
+    throw new Error(`Embedding sync failed: ${response.status}`)
+  }
+  const json = await response.json()
+  return json.data as EmbeddingSyncStats
+}
+
 export async function* streamSearch(
   query: string,
   token: string
