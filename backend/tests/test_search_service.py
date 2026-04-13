@@ -175,7 +175,7 @@ class TestExecuteSearchCollection:
         assert results[0]["title"] == "The Great Gatsby"
         assert results[0]["similarity"] == 0.95
         assert results[1]["title"] == "Inception"
-        embedding_provider.embed.assert_called_once_with(["gatsby"])
+        embedding_provider.embed.assert_called_once_with(["gatsby"], query=True)
 
     @pytest.mark.asyncio
     async def test_category_filter(self):

@@ -30,6 +30,7 @@ def _make_settings(**overrides: str) -> Settings:
         "DEEPSEEK_API_KEY": "sk-test-deepseek",
         "KIMI_API_KEY": "sk-test-kimi",
         "MINIMAX_API_KEY": "sk-test-minimax",
+        "MINIMAX_GROUP_ID": "test-group-id",
         "SUPABASE_URL": "https://fake.supabase.co",
         "SUPABASE_SERVICE_ROLE_KEY": "fake",
         "SUPABASE_JWT_SECRET": "fake",
@@ -76,7 +77,7 @@ class TestFactoryCreatesCorrectProvider:
     def test_minimax_embedding(self):
         provider = create_embedding_provider("minimax", _make_settings())
         assert isinstance(provider, MiniMaxEmbeddingProvider)
-        assert provider.dimensions == 1024
+        assert provider.dimensions == 1536
 
 
 # =====================================================================
@@ -127,8 +128,8 @@ class TestProviderInstantiation:
         assert provider.dimensions == 1536
 
     def test_minimax_embedding_instantiation(self):
-        provider = MiniMaxEmbeddingProvider(api_key="test-key")
-        assert provider.dimensions == 1024
+        provider = MiniMaxEmbeddingProvider(api_key="test-key", group_id="test-group")
+        assert provider.dimensions == 1536
 
     def test_deepseek_inherits_openai(self):
         assert issubclass(DeepSeekChatProvider, OpenAIChatProvider)
@@ -388,18 +389,25 @@ class TestEmbedding:
 
     @pytest.mark.asyncio
     async def test_minimax_embedding_dimensions(self):
-        provider = MiniMaxEmbeddingProvider(api_key="test-key")
+        provider = MiniMaxEmbeddingProvider(
+            api_key="test-key", group_id="test-group"
+        )
 
-        fake_vectors = [[0.5] * 1024]
-        mock_data = [SimpleNamespace(embedding=v) for v in fake_vectors]
-        mock_response = SimpleNamespace(data=mock_data)
+        fake_vectors = [[0.5] * 1536]
+        fake_response = MagicMock()
+        fake_response.raise_for_status = MagicMock()
+        fake_response.json = MagicMock(
+            return_value={"vectors": fake_vectors, "base_resp": {"status_code": 0}}
+        )
 
-        provider._client.embeddings.create = AsyncMock(return_value=mock_response)
+        with patch("app.llm.embedding.httpx.AsyncClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__aenter__.return_value
+            mock_client.post = AsyncMock(return_value=fake_response)
 
-        result = await provider.embed(["test"])
+            result = await provider.embed(["test"])
 
         assert len(result) == 1
-        assert len(result[0]) == 1024
+        assert len(result[0]) == 1536
 
 
 # =====================================================================

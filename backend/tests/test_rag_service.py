@@ -224,7 +224,7 @@ class TestRetrieveContext:
             )
 
         # Embedding provider called with query
-        embedding_provider.embed.assert_called_once_with(["推荐小说"])
+        embedding_provider.embed.assert_called_once_with(["推荐小说"], query=True)
 
         # Similarity search called with correct args
         mock_sim.assert_called_once_with(
