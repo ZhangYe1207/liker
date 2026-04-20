@@ -48,7 +48,7 @@ npm run dev
 
 ### Phase 1：DB + 后端
 
-- [ ] **V1. 迁移可执行** — `supabase/migrations/005_add_ai_conversations.sql` 顺利执行，无报错；重跑幂等（或与现有 migration 风格一致）。
+- [x] **V1. 迁移可执行** — `supabase/migrations/005_add_ai_conversations.sql` 顺利执行，无报错；重跑幂等（或与现有 migration 风格一致）。
 
 - [ ] **V2. RLS 四件套齐全** — Supabase Dashboard → Authentication → Policies 下，`conversations` 和 `messages` 各有 4 条 policy（select/insert/update/delete），`TO authenticated`。
 

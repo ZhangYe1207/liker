@@ -1,7 +1,7 @@
 ---
 title: feat: AI Chat 多会话持久化
 type: feat
-status: active
+status: completed
 date: 2026-04-13
 origin: docs/brainstorms/2026-04-13-ai-chat-multi-conversation-requirements.md
 ---
@@ -195,7 +195,7 @@ AuthProvider
 
 ## Implementation Units
 
-- [ ] **Unit 1: DB schema — conversations + messages 表**
+- [x] **Unit 1: DB schema — conversations + messages 表**
 
 **Goal:** 新建两张表 + RLS + 索引 + 触发器，为后续代码提供基础设施
 
@@ -226,7 +226,7 @@ AuthProvider
 
 ---
 
-- [ ] **Unit 2: Backend — DB 层 + Pydantic schemas**
+- [x] **Unit 2: Backend — DB 层 + Pydantic schemas**
 
 **Goal:** 封装对 `conversations` / `messages` 的 CRUD 原语，独立可测
 
@@ -267,7 +267,7 @@ AuthProvider
 
 ---
 
-- [ ] **Unit 3: Backend — conversations CRUD 路由**
+- [x] **Unit 3: Backend — conversations CRUD 路由**
 
 **Goal:** 暴露 REST 端点供前端列出/创建（预留）/重命名/删除对话
 
@@ -307,7 +307,7 @@ AuthProvider
 
 ---
 
-- [ ] **Unit 4: Backend — RAG/Search 多轮 + 消息持久化**
+- [x] **Unit 4: Backend — RAG/Search 多轮 + 消息持久化**
 
 **Goal:** `/api/ai/chat` 和 `/api/ai/search` 支持 `conversation_id`；服务层自动加载历史、流完写库；推荐卡片与助手消息绑定
 
@@ -364,7 +364,7 @@ AuthProvider
 
 ---
 
-- [ ] **Unit 5: Frontend — 类型 + DataLayer 接口扩展**
+- [x] **Unit 5: Frontend — 类型 + DataLayer 接口扩展**
 
 **Goal:** 建立 Conversation/Message/Recommendation 的前端类型；在 DataLayer 抽象中挂载对话 CRUD（Supabase 实现 + localStorage 抛错桩）
 
@@ -401,7 +401,7 @@ AuthProvider
 
 ---
 
-- [ ] **Unit 6: Frontend — `useConversations` hook**
+- [x] **Unit 6: Frontend — `useConversations` hook**
 
 **Goal:** 封装对话列表 + 活跃会话 + 消息 + 流式发送的全部状态和方法，供 `AIChatPanel` 消费
 
@@ -442,7 +442,7 @@ AuthProvider
 
 ---
 
-- [ ] **Unit 7: Frontend — `AIChatPanel` 整合 + 下拉切换 UI**
+- [x] **Unit 7: Frontend — `AIChatPanel` 整合 + 下拉切换 UI**
 
 **Goal:** 把 `AIChatPanel` 改造成纯展示层，标题栏加可点击下拉（列出对话、行内重命名、删除带二次确认、新建会话）
 
@@ -479,7 +479,7 @@ AuthProvider
 
 ---
 
-- [ ] **Unit 8: 验收清单**
+- [x] **Unit 8: 验收清单**
 
 **Goal:** 按 CLAUDE.md 约定产出与本 plan 同名的 acceptance 清单
 
