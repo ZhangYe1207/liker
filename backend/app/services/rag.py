@@ -10,6 +10,7 @@ from app.db.embeddings import similarity_search
 from app.db.items import get_user_items
 from app.llm.protocols import ChatProvider, EmbeddingProvider
 from app.services.conversation_helpers import (
+    ConversationNotFoundError,
     ensure_conversation,
     load_history,
     persist_assistant_message,
@@ -157,9 +158,18 @@ async def chat_with_rag_persistent(
     message is persisted **after** the stream finishes, with the accumulated
     content.
     """
-    conv_id, is_new = await ensure_conversation(
-        db_client, user_id, conversation_id, message
-    )
+    try:
+        conv_id, is_new = await ensure_conversation(
+            db_client, user_id, conversation_id, message
+        )
+    except ConversationNotFoundError:
+        yield {
+            "type": "error",
+            "code": "conversation_not_found",
+            "message": "会话不存在或无权访问",
+        }
+        return
+
     if is_new:
         yield {"type": "conversation", "id": conv_id}
 

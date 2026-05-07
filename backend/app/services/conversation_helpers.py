@@ -21,9 +21,20 @@ from supabase import Client
 
 from app.db.conversations import (
     create_conversation,
+    get_conversation,
     insert_message,
     list_messages,
 )
+
+
+class ConversationNotFoundError(Exception):
+    """Caller passed a conversation_id that the current user does not own.
+
+    Raised by :func:`ensure_conversation` for both missing rows and
+    cross-tenant access attempts — service-role key bypasses RLS, so the
+    helper has to enforce tenant isolation explicitly.
+    """
+
 
 TITLE_MAX_LEN = 20
 
@@ -50,9 +61,14 @@ async def ensure_conversation(
 
     If *conversation_id* is ``None``, creates a new conversation with a title
     derived from *first_user_message* and returns ``is_new=True``. Otherwise
-    returns the given id as-is.
+    verifies the conversation belongs to *user_id* and returns it; raises
+    :class:`ConversationNotFoundError` when the row is missing or owned by
+    another user.
     """
     if conversation_id:
+        existing = await get_conversation(client, user_id, conversation_id)
+        if existing is None:
+            raise ConversationNotFoundError(conversation_id)
         return conversation_id, False
 
     title = _title_from_message(first_user_message)

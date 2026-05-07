@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.conversation_helpers import (
+    ConversationNotFoundError,
     _title_from_message,
     ensure_conversation,
     load_history,
@@ -50,13 +51,39 @@ class TestTitleFromMessage:
 
 class TestEnsureConversation:
     @pytest.mark.asyncio
-    async def test_existing_id_returns_as_is(self):
+    async def test_existing_id_returns_when_owned(self):
         client = MagicMock()
-        conv_id, is_new = await ensure_conversation(
-            client, TEST_USER_ID, EXISTING_CONV, "hi"
-        )
+        with patch(
+            "app.services.conversation_helpers.get_conversation",
+            new_callable=AsyncMock,
+            return_value={"id": EXISTING_CONV, "title": "曾经的会话"},
+        ) as mock_get:
+            conv_id, is_new = await ensure_conversation(
+                client, TEST_USER_ID, EXISTING_CONV, "hi"
+            )
+
         assert conv_id == EXISTING_CONV
         assert is_new is False
+        mock_get.assert_awaited_once_with(client, TEST_USER_ID, EXISTING_CONV)
+
+    @pytest.mark.asyncio
+    async def test_existing_id_raises_when_not_owned(self):
+        """Cross-tenant guard: another user's conversation_id must be rejected.
+
+        Backend uses service-role key (bypasses RLS), so the helper has to
+        enforce ownership. Without this, an attacker could write into and
+        read from any conversation by guessing the UUID.
+        """
+        client = MagicMock()
+        with patch(
+            "app.services.conversation_helpers.get_conversation",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            with pytest.raises(ConversationNotFoundError):
+                await ensure_conversation(
+                    client, TEST_USER_ID, "someone-elses-conv", "hi"
+                )
 
     @pytest.mark.asyncio
     async def test_none_creates_new(self):
@@ -474,3 +501,90 @@ class TestSearchWithToolsPersistent:
 
         # Persisted without recommendations
         assert mock_persist.call_args[1]["recommendations"] is None
+
+
+# ---------------------------------------------------------------------------
+# Cross-tenant guards (persistent flows must honor ConversationNotFoundError)
+# ---------------------------------------------------------------------------
+
+
+class TestCrossTenantGuards:
+    @pytest.mark.asyncio
+    async def test_chat_emits_error_event_for_unowned_conversation(self):
+        client = MagicMock()
+        chat_provider = _streaming_chat_provider()
+        embedding_provider = _embedding_provider()
+
+        with (
+            patch(
+                "app.services.rag.ensure_conversation",
+                new_callable=AsyncMock,
+                side_effect=ConversationNotFoundError("someone-elses"),
+            ),
+            patch(
+                "app.services.rag.persist_user_message",
+                new_callable=AsyncMock,
+            ) as mock_persist_user,
+            patch(
+                "app.services.rag.persist_assistant_message",
+                new_callable=AsyncMock,
+            ) as mock_persist_assistant,
+        ):
+            events = [
+                e async for e in chat_with_rag_persistent(
+                    chat_provider, embedding_provider, client, TEST_USER_ID,
+                    "leak my history", conversation_id="someone-elses",
+                )
+            ]
+
+        # Stream must terminate with a single error event — no DB writes.
+        assert events == [
+            {
+                "type": "error",
+                "code": "conversation_not_found",
+                "message": "会话不存在或无权访问",
+            }
+        ]
+        mock_persist_user.assert_not_called()
+        mock_persist_assistant.assert_not_called()
+        chat_provider.chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_search_emits_error_event_for_unowned_conversation(self):
+        client = MagicMock()
+        chat_provider = MagicMock()
+        chat_provider.chat = AsyncMock()
+        embedding_provider = _embedding_provider()
+
+        with (
+            patch(
+                "app.services.search.ensure_conversation",
+                new_callable=AsyncMock,
+                side_effect=ConversationNotFoundError("someone-elses"),
+            ),
+            patch(
+                "app.services.search.persist_user_message",
+                new_callable=AsyncMock,
+            ) as mock_persist_user,
+            patch(
+                "app.services.search.persist_assistant_message",
+                new_callable=AsyncMock,
+            ) as mock_persist_assistant,
+        ):
+            events = [
+                e async for e in search_with_tools_persistent(
+                    chat_provider, embedding_provider, client, TEST_USER_ID,
+                    "find anything", conversation_id="someone-elses",
+                )
+            ]
+
+        assert events == [
+            {
+                "type": "error",
+                "code": "conversation_not_found",
+                "message": "会话不存在或无权访问",
+            }
+        ]
+        mock_persist_user.assert_not_called()
+        mock_persist_assistant.assert_not_called()
+        chat_provider.chat.assert_not_called()
