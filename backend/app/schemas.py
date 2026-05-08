@@ -5,7 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+# Cap conversation title length so the rename endpoint can't be abused to
+# stash multi-MB strings on a row. 100 chars matches the DB CHECK we add in
+# migration 006.
+CONVERSATION_TITLE_MAX_LEN = 100
 
 
 class ResponseEnvelope(BaseModel):
@@ -25,7 +30,7 @@ class ConversationOut(BaseModel):
     """Conversation row returned to the frontend."""
 
     id: str
-    title: str
+    title: str = Field(max_length=CONVERSATION_TITLE_MAX_LEN)
     created_at: datetime
     updated_at: datetime
 
@@ -41,4 +46,4 @@ class MessageOut(BaseModel):
 
 
 class RenameConversationRequest(BaseModel):
-    title: str
+    title: str = Field(min_length=1, max_length=CONVERSATION_TITLE_MAX_LEN)
