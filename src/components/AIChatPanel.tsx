@@ -80,12 +80,14 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
   }
 
   function handleNewConversation() {
+    if (streaming) return
     newConversation()
     setDropdownOpen(false)
     setEditingId(null)
   }
 
   function handleSelect(id: string) {
+    if (streaming) return
     if (id === activeId) {
       setDropdownOpen(false)
       return
@@ -114,6 +116,7 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
   }
 
   async function handleDelete(id: string, title: string) {
+    if (streaming) return
     if (!window.confirm(`确认删除对话「${title}」？`)) return
     try {
       await deleteConversation(id)
@@ -137,9 +140,10 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
           <button
             className="ai-chat-title-btn"
             onClick={() => setDropdownOpen(v => !v)}
-            disabled={!accessToken}
+            disabled={!accessToken || streaming}
             aria-haspopup="listbox"
             aria-expanded={dropdownOpen}
+            title={streaming ? '生成中，请稍候' : undefined}
           >
             <span className="ai-chat-title">{titleText}</span>
             <span className="ai-chat-title-caret">▾</span>
@@ -150,6 +154,7 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
               <button
                 className="ai-chat-dropdown-new"
                 onClick={handleNewConversation}
+                disabled={streaming}
               >
                 + 新建会话
               </button>
@@ -183,6 +188,7 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
                         <button
                           className="ai-chat-dropdown-pick"
                           onClick={() => handleSelect(c.id)}
+                          disabled={streaming}
                         >
                           <span className="ai-chat-dropdown-title">{c.title}</span>
                           <span className="ai-chat-dropdown-time">
@@ -194,21 +200,24 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
                         <div className="ai-chat-dropdown-actions">
                           <button
                             className="ai-chat-dropdown-action"
-                            title="重命名"
+                            title={streaming ? '生成中，请稍候' : '重命名'}
                             onClick={e => {
                               e.stopPropagation()
+                              if (streaming) return
                               startEdit(c.id, c.title)
                             }}
+                            disabled={streaming}
                           >
                             ✎
                           </button>
                           <button
                             className="ai-chat-dropdown-action"
-                            title="删除"
+                            title={streaming ? '生成中，请稍候' : '删除'}
                             onClick={e => {
                               e.stopPropagation()
                               void handleDelete(c.id, c.title)
                             }}
+                            disabled={streaming}
                           >
                             ✕
                           </button>

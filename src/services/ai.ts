@@ -37,11 +37,13 @@ export type AIStreamEvent =
   | { type: 'conversation'; id: string }
   | { type: 'recommendations'; items: RecommendationItem[] }
   | { type: 'content'; content: string; done: boolean }
+  | { type: 'error'; code?: string; message: string }
 
 export async function* streamChat(
   message: string,
   token: string,
   conversationId: string | null = null,
+  signal?: AbortSignal,
 ): AsyncGenerator<AIStreamEvent> {
   const response = await fetch(`${AI_BASE_URL}/api/ai/chat`, {
     method: 'POST',
@@ -51,15 +53,17 @@ export async function* streamChat(
       stream: true,
       conversation_id: conversationId,
     }),
+    signal,
   })
 
   if (!response.ok) {
     throw new Error(`AI chat request failed: ${response.status}`)
   }
 
-  for await (const event of parseSSE<AIStreamEvent>(response)) {
+  for await (const event of parseSSE<AIStreamEvent>(response, signal)) {
     yield event
     if (event.type === 'content' && event.done) return
+    if (event.type === 'error') return
   }
 }
 
@@ -85,6 +89,7 @@ export async function* streamSearch(
   query: string,
   token: string,
   conversationId: string | null = null,
+  signal?: AbortSignal,
 ): AsyncGenerator<AIStreamEvent> {
   const response = await fetch(`${AI_BASE_URL}/api/ai/search`, {
     method: 'POST',
@@ -94,35 +99,47 @@ export async function* streamSearch(
       stream: true,
       conversation_id: conversationId,
     }),
+    signal,
   })
 
   if (!response.ok) {
     throw new Error(`AI search request failed: ${response.status}`)
   }
 
-  for await (const event of parseSSE<AIStreamEvent>(response)) {
+  for await (const event of parseSSE<AIStreamEvent>(response, signal)) {
     yield event
     if (event.type === 'content' && event.done) return
+    if (event.type === 'error') return
   }
 }
 
-async function* parseSSE<T>(response: Response): AsyncGenerator<T> {
+async function* parseSSE<T>(
+  response: Response,
+  signal?: AbortSignal,
+): AsyncGenerator<T> {
   const reader = response.body!.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
+  try {
+    while (true) {
+      if (signal?.aborted) return
+      const { done, value } = await reader.read()
+      if (done) break
 
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
 
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        yield JSON.parse(line.slice(6)) as T
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          yield JSON.parse(line.slice(6)) as T
+        }
       }
     }
+  } finally {
+    // Best-effort cancel so the underlying network stream releases promptly
+    // when the consumer aborts (or throws).
+    void reader.cancel().catch(() => {})
   }
 }
