@@ -37,3 +37,24 @@ async def get_item_with_category(
         .execute()
     )
     return result.data[0] if result.data else None
+
+
+async def get_items_by_ids(
+    client: Client, user_id: str, item_ids: list[str]
+) -> list[dict]:
+    """Fetch a specific set of items with categories, scoped to user_id.
+
+    Use this from RAG / vector-search paths where the caller already has the
+    matching item ids. Avoids the all-table scan that ``get_user_items`` does
+    when only a handful of rows are needed.
+    """
+    if not item_ids:
+        return []
+    result = (
+        client.table("items")
+        .select("*, categories(name, icon)")
+        .in_("id", item_ids)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return result.data

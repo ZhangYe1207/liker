@@ -38,6 +38,12 @@ class ConversationNotFoundError(Exception):
 
 TITLE_MAX_LEN = 20
 
+# Cap how many recent messages we replay into the LLM. ~20 user/assistant
+# turns is plenty for the analyst persona and stays well under every
+# provider's context window even with long replies. Older turns are
+# silently dropped — if we ever need rolling-summary memory, do it here.
+LLM_HISTORY_WINDOW = 40
+
 
 def _title_from_message(message: str) -> str:
     """Truncate the first user message to form a conversation title.
@@ -79,12 +85,16 @@ async def ensure_conversation(
 async def load_history(
     client: Client, conversation_id: str
 ) -> list[dict[str, str]]:
-    """Load messages for *conversation_id* as a list of ``{role, content}`` dicts.
+    """Load recent messages for *conversation_id* as ``{role, content}`` dicts.
+
+    Bounded by :data:`LLM_HISTORY_WINDOW` so very long conversations don't
+    blow up the LLM context window or generate O(N²) traffic. Returns
+    chronological order with the *latest* turns kept; oldest are dropped.
 
     Strips the ``recommendations`` / ``id`` / ``created_at`` fields — the LLM
     only needs role + content to continue the conversation.
     """
-    rows = await list_messages(client, conversation_id)
+    rows = await list_messages(client, conversation_id, limit=LLM_HISTORY_WINDOW)
     return [{"role": r["role"], "content": r["content"]} for r in rows]
 
 

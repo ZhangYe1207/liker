@@ -6,7 +6,7 @@ import json
 from typing import AsyncIterator
 
 from app.db.embeddings import similarity_search
-from app.db.items import get_user_items
+from app.db.items import get_items_by_ids, get_user_items
 from app.llm.protocols import ChatProvider, EmbeddingProvider
 from app.services.conversation_helpers import (
     ConversationNotFoundError,
@@ -86,7 +86,8 @@ async def execute_search_collection(
     vectors = await embedding_provider.embed([keywords], query=True)
     matches = await similarity_search(db_client, user_id, vectors[0], limit=10)
 
-    items = await get_user_items(db_client, user_id)
+    item_ids = [m["item_id"] for m in matches]
+    items = await get_items_by_ids(db_client, user_id, item_ids)
     items_by_id = {item["id"]: item for item in items}
 
     results = []
@@ -271,66 +272,86 @@ async def search_with_tools_persistent(
 
     await persist_user_message(db_client, conv_id, query)
 
-    history = await load_history(db_client, conv_id)
-    prior_turns = history[:-1] if history else []
-
-    messages: list[dict] = [
-        {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
-        *prior_turns,
-        {"role": "user", "content": query},
-    ]
-
-    # Step 1: tool selection (non-streaming so we can inspect tool_calls)
-    result = await chat_provider.chat(messages, tools=TOOL_DEFINITIONS, stream=False)
-
-    tool_results: list[dict] = []
-    recommendations: list[dict] = []
-
-    if result.get("tool_calls"):
-        for tool_call in result["tool_calls"]:
-            name = tool_call["name"]
-            args = tool_call["arguments"]
-
-            if name == "search_collection":
-                tool_result = await execute_search_collection(
-                    embedding_provider, db_client, user_id, args
-                )
-                tool_results.append({"tool": name, "result": tool_result})
-            elif name == "search_external":
-                tool_result = await execute_search_external(args, tmdb_api_key)
-                recommendations.extend(tool_result)
-                tool_results.append({"tool": name, "result": tool_result})
-            elif name == "get_taste_profile":
-                tool_result = await execute_get_taste_profile(
-                    db_client, user_id, args
-                )
-                tool_results.append({"tool": name, "result": tool_result})
-
-    if recommendations:
-        yield {"type": "recommendations", "items": recommendations}
-
-    messages.append(
-        {
-            "role": "assistant",
-            "content": result.get("content", ""),
-            "tool_calls": result.get("tool_calls"),
-        }
-    )
-    messages.append(
-        {
-            "role": "user",
-            "content": f"工具返回结果：\n{json.dumps(tool_results, ensure_ascii=False, default=str)}",
-        }
-    )
-
-    # Step 2: stream synthesis
-    final_stream = await chat_provider.chat(messages, stream=True)
     accumulated = ""
-    async for chunk in final_stream:
-        piece = chunk.get("content", "")
-        if piece:
-            accumulated += piece
-        yield {"type": "content", **chunk}
+    recommendations: list[dict] = []
+    try:
+        history = await load_history(db_client, conv_id)
+        prior_turns = history[:-1] if history else []
+
+        messages: list[dict] = [
+            {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
+            *prior_turns,
+            {"role": "user", "content": query},
+        ]
+
+        # Step 1: tool selection (non-streaming so we can inspect tool_calls)
+        result = await chat_provider.chat(
+            messages, tools=TOOL_DEFINITIONS, stream=False
+        )
+
+        tool_results: list[dict] = []
+
+        if result.get("tool_calls"):
+            for tool_call in result["tool_calls"]:
+                name = tool_call["name"]
+                args = tool_call["arguments"]
+
+                if name == "search_collection":
+                    tool_result = await execute_search_collection(
+                        embedding_provider, db_client, user_id, args
+                    )
+                    tool_results.append({"tool": name, "result": tool_result})
+                elif name == "search_external":
+                    tool_result = await execute_search_external(args, tmdb_api_key)
+                    recommendations.extend(tool_result)
+                    tool_results.append({"tool": name, "result": tool_result})
+                elif name == "get_taste_profile":
+                    tool_result = await execute_get_taste_profile(
+                        db_client, user_id, args
+                    )
+                    tool_results.append({"tool": name, "result": tool_result})
+
+        if recommendations:
+            yield {"type": "recommendations", "items": recommendations}
+
+        messages.append(
+            {
+                "role": "assistant",
+                "content": result.get("content", ""),
+                "tool_calls": result.get("tool_calls"),
+            }
+        )
+        messages.append(
+            {
+                "role": "user",
+                "content": f"工具返回结果：\n{json.dumps(tool_results, ensure_ascii=False, default=str)}",
+            }
+        )
+
+        # Step 2: stream synthesis
+        final_stream = await chat_provider.chat(messages, stream=True)
+        async for chunk in final_stream:
+            piece = chunk.get("content", "")
+            if piece:
+                accumulated += piece
+            yield {"type": "content", **chunk}
+    except Exception as exc:  # noqa: BLE001
+        # Same orphan-prevention pattern as chat_with_rag_persistent.
+        yield {
+            "type": "error",
+            "code": "stream_failed",
+            "message": str(exc) or "生成失败",
+        }
+        try:
+            await persist_assistant_message(
+                db_client,
+                conv_id,
+                accumulated or "（本轮生成失败）",
+                recommendations=recommendations or None,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return
 
     await persist_assistant_message(
         db_client,
