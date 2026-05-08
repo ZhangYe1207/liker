@@ -40,3 +40,11 @@
 ## 路径规则
 
 - 访问或修改文件时，一律使用相对于项目根目录的路径，不使用绝对路径
+
+
+## Knowledge Vault
+
+Path: ../career/knowledge/
+
+<!-- knowledge 相关 skill（capture-qa / ingest-knowledge / lint-knowledge）会读这里定位 vault 路径。 -->
+<!-- 物理可以是本项目独立 vault、软链到中央 vault、或 git submodule——skill 不关心，只看这个声明。 -->
