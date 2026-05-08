@@ -6,6 +6,16 @@ date: 2026-04-13
 origin: docs/brainstorms/2026-04-13-ai-chat-multi-conversation-requirements.md
 ---
 
+<!--
+2026-05-08: 第二次关闭。第一次关闭 (commit 6dc3cd3) 时 P0 已修但 P1 未清零，
+违反 plan 关闭规则，回退到 active 重跑 /ce:work。本轮已清零 P0+全部 P1+P2 #6：
+  P1 #2 AbortController + 守卫；P1 #3 stream try/except + 哨兵；
+  P1 #4 .in_(ids) 替代全表；P1 #5 list_messages limit；P2 #6 title max_length。
+剩余 P2/P3 见 .context/compound-engineering/ce-review/2026-05-06-multi-conv/REPORT.md
+顶部「2026-05-08 修复进度」表格，走 follow-up plan 跟踪。
+-->
+
+
 # feat: AI Chat 多会话持久化
 
 ## Overview
