@@ -14,6 +14,7 @@ export interface Item {
   genre?: string
   externalId?: string
   source?: string
+  review?: string
   metadata?: Record<string, unknown>
   updatedAt?: number
 }
@@ -34,5 +35,12 @@ export interface LogbookEntry {
   itemId: string
   fromStatus: ItemStatus | null
   toStatus: ItemStatus
+  createdAt: number
+}
+
+export interface Conversation {
+  id: string
+  title: string
+  updatedAt: number
   createdAt: number
 }

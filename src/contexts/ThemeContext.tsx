@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
-import { useAuth } from './AuthContext'
+import { useAuth } from '../hooks/useAuth'
 import { themes, resolveTheme, getThemeById } from '../lib/themes'
 import type { ThemeId, ThemePreference, ChartColors } from '../lib/themes'
 
