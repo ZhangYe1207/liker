@@ -8,12 +8,18 @@ TMDB_BASE = "https://api.themoviedb.org/3"
 OPEN_LIBRARY_BASE = "https://openlibrary.org"
 ITUNES_BASE = "https://itunes.apple.com"
 
+# Bound every outbound third-party call so a slow/hung upstream can't keep an
+# SSE connection open indefinitely. httpx defaults to *no* total timeout once a
+# connection is established, which is exactly the failure mode the review
+# flagged. connect=5s catches dead hosts; read=10s catches stalled responses.
+_EXTERNAL_API_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+
 
 async def search_movies(query: str, api_key: str = "") -> list[dict]:
     """Search TMDB for movies."""
     if not api_key:
         return []
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=_EXTERNAL_API_TIMEOUT) as client:
         resp = await client.get(
             f"{TMDB_BASE}/search/movie",
             params={"query": query, "api_key": api_key, "language": "zh-CN"},
@@ -41,7 +47,7 @@ async def search_movies(query: str, api_key: str = "") -> list[dict]:
 
 async def search_books(query: str) -> list[dict]:
     """Search Open Library for books."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=_EXTERNAL_API_TIMEOUT) as client:
         resp = await client.get(
             f"{OPEN_LIBRARY_BASE}/search.json",
             params={"q": query, "limit": 5, "language": "chi"},
@@ -69,7 +75,7 @@ async def search_books(query: str) -> list[dict]:
 
 async def search_music(query: str) -> list[dict]:
     """Search iTunes for music."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=_EXTERNAL_API_TIMEOUT) as client:
         resp = await client.get(
             f"{ITUNES_BASE}/search",
             params={"term": query, "media": "music", "limit": 5},

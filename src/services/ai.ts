@@ -33,6 +33,20 @@ function getAuthHeaders(token: string): Record<string, string> {
   }
 }
 
+/** Pull the backend's unified `{error}` envelope off a failed response so the
+ *  user sees the real reason instead of a bare status code. Every backend
+ *  route now returns this shape on error (see app/main.py exception handlers),
+ *  so a single parser works for chat, search, and embeddings alike. */
+async function describeError(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.json()
+    if (body && typeof body.error === 'string' && body.error) return body.error
+  } catch {
+    // Non-JSON body (e.g. a proxy error page) — fall through to the status.
+  }
+  return `${fallback}: ${response.status}`
+}
+
 export type AIStreamEvent =
   | { type: 'conversation'; id: string }
   | { type: 'recommendations'; items: RecommendationItem[] }
@@ -57,7 +71,7 @@ export async function* streamChat(
   })
 
   if (!response.ok) {
-    throw new Error(`AI chat request failed: ${response.status}`)
+    throw new Error(await describeError(response, 'AI chat request failed'))
   }
 
   for await (const event of parseSSE<AIStreamEvent>(response, signal)) {
@@ -79,7 +93,7 @@ export async function syncEmbeddings(token: string): Promise<EmbeddingSyncStats>
     headers: getAuthHeaders(token),
   })
   if (!response.ok) {
-    throw new Error(`Embedding sync failed: ${response.status}`)
+    throw new Error(await describeError(response, 'Embedding sync failed'))
   }
   const json = await response.json()
   return json.data as EmbeddingSyncStats
@@ -103,7 +117,7 @@ export async function* streamSearch(
   })
 
   if (!response.ok) {
-    throw new Error(`AI search request failed: ${response.status}`)
+    throw new Error(await describeError(response, 'AI search request failed'))
   }
 
   for await (const event of parseSSE<AIStreamEvent>(response, signal)) {

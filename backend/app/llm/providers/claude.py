@@ -7,12 +7,18 @@ from typing import AsyncIterator
 
 from anthropic import AsyncAnthropic
 
+# The Anthropic SDK defaults to a 10-minute timeout, which lets a stalled
+# upstream pin an SSE connection open far too long. 60s comfortably covers a
+# full streamed completion (the read timeout is per-chunk, not total) while
+# still failing fast on a dead endpoint.
+_LLM_TIMEOUT = 60.0
+
 
 class ClaudeChatProvider:
     """Chat provider backed by the Anthropic messages API."""
 
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514") -> None:
-        self._client = AsyncAnthropic(api_key=api_key)
+        self._client = AsyncAnthropic(api_key=api_key, timeout=_LLM_TIMEOUT)
         self._model = model
 
     @property

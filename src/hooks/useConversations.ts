@@ -288,10 +288,19 @@ export function useConversations(
     async (id: string, title: string) => {
       const cleaned = title.trim()
       if (!cleaned) return
-      const updated = await dataLayer.renameConversation(id, cleaned)
-      setConversations(prev =>
-        prev.map(c => (c.id === id ? { ...c, title: updated.title } : c)),
-      )
+      try {
+        // We commit to local state only after the server confirms, so a
+        // failure leaves the original title on screen (nothing to roll back) —
+        // we just need to surface *why* so it isn't silently swallowed.
+        const updated = await dataLayer.renameConversation(id, cleaned)
+        setConversations(prev =>
+          prev.map(c => (c.id === id ? { ...c, title: updated.title } : c)),
+        )
+        setError(null)
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : '重命名失败')
+        throw err
+      }
     },
     [dataLayer],
   )
@@ -303,7 +312,16 @@ export function useConversations(
       if (id === activeIdRef.current) {
         abortInFlightStream()
       }
-      await dataLayer.deleteConversation(id)
+      try {
+        await dataLayer.deleteConversation(id)
+      } catch (err: unknown) {
+        // Deletion is committed to local state only after the server confirms,
+        // so the row stays in the list on failure — surface the reason instead
+        // of dropping it on the floor.
+        setError(err instanceof Error ? err.message : '删除失败')
+        throw err
+      }
+      setError(null)
       setConversations(prev => prev.filter(c => c.id !== id))
       if (id === activeIdRef.current) {
         // Active one was removed — pick the next most recent (post-delete)

@@ -11,7 +11,10 @@ from jose import jwt
 
 TEST_SECRET = "test-secret"
 TEST_USER_ID = "user-abc-123"
-CONV_ID = "conv-001"
+# Path params are UUID-typed, so test ids must be valid UUIDs (a malformed id
+# is rejected with 422 before the handler runs — see TestUuidValidation).
+CONV_ID = "11111111-1111-1111-1111-111111111111"
+OTHER_CONV_ID = "22222222-2222-2222-2222-222222222222"
 
 
 def _make_token(sub: str = TEST_USER_ID) -> str:
@@ -151,10 +154,16 @@ class TestGetMessagesEndpoint:
             ),
         ):
             resp = await client.get(
-                f"/api/conversations/other-user-conv/messages",
+                f"/api/conversations/{OTHER_CONV_ID}/messages",
                 headers={"Authorization": f"Bearer {token}"},
             )
         assert resp.status_code == 404
+        # Error contract: same {data, error, metadata} envelope as every other
+        # route — not Starlette's default {"detail": ...}.
+        body = resp.json()
+        assert body["data"] is None
+        assert body["error"] == "Conversation not found"
+        assert "detail" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +224,7 @@ class TestRenameEndpoint:
             ),
         ):
             resp = await client.patch(
-                "/api/conversations/other-conv",
+                f"/api/conversations/{OTHER_CONV_ID}",
                 headers={"Authorization": f"Bearer {token}"},
                 json={"title": "Stolen"},
             )
@@ -289,7 +298,7 @@ class TestDeleteEndpoint:
             ),
         ):
             resp = await client.delete(
-                "/api/conversations/nope",
+                f"/api/conversations/{OTHER_CONV_ID}",
                 headers={"Authorization": f"Bearer {token}"},
             )
         assert resp.status_code == 404
@@ -298,3 +307,44 @@ class TestDeleteEndpoint:
     async def test_requires_auth(self, client):
         resp = await client.delete(f"/api/conversations/{CONV_ID}")
         assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# Malformed conversation_id -> 422 (not 500)
+# ---------------------------------------------------------------------------
+
+
+class TestUuidValidation:
+    """A malformed conversation_id must be rejected at the edge with 422,
+    never reach the DB layer, and never surface as a 500."""
+
+    @pytest.mark.asyncio
+    async def test_messages_malformed_id_returns_422(self, client):
+        token = _make_token()
+        with patch("app.auth.get_settings", _fake_get_settings):
+            resp = await client.get(
+                "/api/conversations/not-a-uuid/messages",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_rename_malformed_id_returns_422(self, client):
+        token = _make_token()
+        with patch("app.auth.get_settings", _fake_get_settings):
+            resp = await client.patch(
+                "/api/conversations/not-a-uuid",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"title": "x"},
+            )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_delete_malformed_id_returns_422(self, client):
+        token = _make_token()
+        with patch("app.auth.get_settings", _fake_get_settings):
+            resp = await client.delete(
+                "/api/conversations/not-a-uuid",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 422

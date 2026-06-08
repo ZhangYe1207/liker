@@ -7,6 +7,10 @@ import asyncio
 import httpx
 from openai import AsyncOpenAI
 
+# Bound embedding calls the same way as chat providers; the OpenAI SDK
+# otherwise defaults to 600s.
+_EMBEDDING_TIMEOUT = 60.0
+
 
 class OpenAIEmbeddingProvider:
     """Embedding provider backed by OpenAI's text-embedding API."""
@@ -18,7 +22,7 @@ class OpenAIEmbeddingProvider:
         dimensions: int = 1536,
         base_url: str | None = None,
     ) -> None:
-        kwargs: dict = {"api_key": api_key}
+        kwargs: dict = {"api_key": api_key, "timeout": _EMBEDDING_TIMEOUT}
         if base_url is not None:
             kwargs["base_url"] = base_url
         self._client = AsyncOpenAI(**kwargs)

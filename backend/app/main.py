@@ -4,8 +4,12 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import get_settings
 from app.schemas import ResponseEnvelope
@@ -54,6 +58,36 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Error contract -----------------------------------------------------
+    # Every route returns the ``ResponseEnvelope`` shape ({data, error,
+    # metadata}). FastAPI/Starlette otherwise emit ``{"detail": ...}`` for
+    # HTTPException and validation errors, which forced the frontend to parse
+    # errors differently per endpoint. These handlers normalize the *body*
+    # while preserving the original status code and headers.
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exception_handler(
+        request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        detail = exc.detail if isinstance(exc.detail, str) else "请求失败"
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ResponseEnvelope(error=detail).model_dump(),
+            headers=getattr(exc, "headers", None),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content=ResponseEnvelope(
+                error="请求参数校验失败",
+                metadata={"errors": jsonable_encoder(exc.errors())},
+            ).model_dump(),
+        )
 
     # Health check -------------------------------------------------------
     @app.get("/api/health", response_model=ResponseEnvelope)

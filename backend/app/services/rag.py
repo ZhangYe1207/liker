@@ -101,43 +101,6 @@ def _build_llm_messages(
     ]
 
 
-async def chat_with_rag(
-    chat_provider: ChatProvider,
-    embedding_provider: EmbeddingProvider,
-    db_client: Client,
-    user_id: str,
-    message: str,
-    stream: bool = False,
-    conversation_id: str | None = None,
-) -> dict | AsyncIterator[dict]:
-    """Full RAG pipeline: retrieve -> assemble -> generate.
-
-    When *conversation_id* is provided (or ``None`` with persistence enabled),
-    the call is bound to a stored conversation: the user message is written
-    before generation, history is loaded for multi-turn context, and the
-    assistant message is persisted after the stream completes.
-
-    Legacy single-turn callers that still pass ``conversation_id=None`` will
-    get a new conversation created lazily; pass the router wrapper
-    ``chat_with_rag_persistent`` when you need the new id threaded back to
-    the caller via SSE.
-    """
-    context_items, _ = await retrieve_context(
-        embedding_provider, db_client, user_id, message
-    )
-    context_text = format_context(context_items)
-
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": f"【收藏数据参考】\n{context_text}\n\n【用户问题】\n{message}",
-        },
-    ]
-
-    return await chat_provider.chat(messages, stream=stream)
-
-
 async def chat_with_rag_persistent(
     chat_provider: ChatProvider,
     embedding_provider: EmbeddingProvider,

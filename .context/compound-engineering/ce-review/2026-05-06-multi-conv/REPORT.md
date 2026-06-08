@@ -36,6 +36,23 @@ P0/P1 全部清零，可以重新关闭 plan。剩余 P2 走 follow-up plan 跟�
 
 ---
 
+## 2026-06-08 follow-up 进度（plan `2026-06-08-001`）
+
+| 编号 | 状态 | 说明 |
+|------|------|------|
+| P2 #7 conversation_id UUID 校验 | ✅ FIXED | ChatRequest/SearchRequest 改 `UUID \| None`；conversations 路径参数改 `UUID`；畸形 id → 422 |
+| P2 #8 错误响应契约 | ✅ FIXED | main.py 加 HTTPException + RequestValidationError handler → 全部错误体走 `ResponseEnvelope`；前端 `ai.ts` 统一解析 `error` 字段 |
+| P2 #11 上游 timeout | ✅ FIXED | external_apis httpx `Timeout(10, connect=5)`；Claude/OpenAI 系 provider + embedding `timeout=60` |
+| P2 #13 乐观状态反馈 | ✅ FIXED | useConversations rename/delete try/catch → `setError`，不再静默吞 |
+| P2 #14 chat_with_rag 死 docstring | ✅ FIXED | 随 #15 删除整个函数 |
+| P2 #15 非流式 chat/search 死代码 | ✅ FIXED | 删 `chat_with_rag` / `search_with_tools` + 路由非流式分支 + 死测试；确认前端只用 streaming |
+
+**仍待决策**（走单独「会话写入路径统一」brainstorm）：P2 #9（前端绕过 REST）、#10（同步 client 阻塞 loop）、#12（重复会话幂等）、全部 P3 polish。
+
+后端 153 测试 + 前端 tsc 全绿。
+
+---
+
 ## P0 — Critical
 
 ### 1. IDOR：`/api/ai/chat` 和 `/api/ai/search` 不校验 conversation_id 所有权
