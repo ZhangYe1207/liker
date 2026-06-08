@@ -205,7 +205,9 @@ class TestRetrieveContext:
             {"item_id": "item-003", "similarity": 0.80},
         ]
 
-        user_items = [SAMPLE_ITEM_FULL, SAMPLE_ITEM_MINIMAL, SAMPLE_ITEM_NO_REVIEW]
+        # Only the matched items are fetched now (id-scoped query),
+        # not the full collection.
+        matched_items = [SAMPLE_ITEM_FULL, SAMPLE_ITEM_NO_REVIEW]
 
         with (
             patch(
@@ -214,9 +216,9 @@ class TestRetrieveContext:
                 return_value=similarity_matches,
             ) as mock_sim,
             patch(
-                "app.services.rag.get_user_items",
+                "app.services.rag.get_items_by_ids",
                 new_callable=AsyncMock,
-                return_value=user_items,
+                return_value=matched_items,
             ) as mock_items,
         ):
             context_items, query_emb = await retrieve_context(
@@ -231,8 +233,11 @@ class TestRetrieveContext:
             db_client, TEST_USER_ID, FAKE_EMBEDDING, 10
         )
 
-        # get_user_items called
-        mock_items.assert_called_once_with(db_client, TEST_USER_ID)
+        # get_items_by_ids called with the matched ids only — proves we no
+        # longer load the whole collection per turn.
+        mock_items.assert_called_once_with(
+            db_client, TEST_USER_ID, ["item-001", "item-003"]
+        )
 
         # Only matched items returned
         assert len(context_items) == 2

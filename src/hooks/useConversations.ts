@@ -50,9 +50,30 @@ export function useConversations(
   // Guard against concurrent sends / stale fetches when the user
   // switches conversations mid-stream.
   const streamingRef = useRef(false)
+  // Holds the in-flight stream's AbortController. Aborted on
+  // selectConversation / newConversation / deleteConversation / unmount
+  // so the SSE reader stops yielding into a now-stale view.
+  const streamControllerRef = useRef<AbortController | null>(null)
+  // Mirrors activeId so SSE event handlers can compare *liveId* against the
+  // currently-rendered conversation without going through React state.
+  const activeIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    activeIdRef.current = activeId
+  }, [activeId])
+
+  const abortInFlightStream = useCallback(() => {
+    const controller = streamControllerRef.current
+    if (controller && !controller.signal.aborted) {
+      controller.abort()
+    }
+    streamControllerRef.current = null
+  }, [])
 
   const selectConversation = useCallback(
     async (id: string) => {
+      // Switching conversations cancels any in-flight stream so its tokens
+      // don't bleed into the newly-loaded message list.
+      abortInFlightStream()
       setActiveId(id)
       setError(null)
       setLoading(true)
@@ -66,7 +87,7 @@ export function useConversations(
         setLoading(false)
       }
     },
-    [dataLayer],
+    [abortInFlightStream, dataLayer],
   )
 
   // Initial load: list conversations; select the most recent if any.
@@ -100,14 +121,18 @@ export function useConversations(
     })()
     return () => {
       cancelled = true
+      // Tear down any in-flight stream when the panel unmounts or the
+      // accessToken/dataLayer changes (e.g. user signs out).
+      abortInFlightStream()
     }
-  }, [accessToken, dataLayer, selectConversation])
+  }, [abortInFlightStream, accessToken, dataLayer, selectConversation])
 
   const newConversation = useCallback(() => {
+    abortInFlightStream()
     setActiveId(null)
     setMessages([])
     setError(null)
-  }, [])
+  }, [abortInFlightStream])
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -121,6 +146,10 @@ export function useConversations(
       setStreaming(true)
       setError(null)
 
+      const controller = new AbortController()
+      streamControllerRef.current = controller
+      const { signal } = controller
+
       // Optimistic user message + placeholder assistant message.
       setMessages(prev => [
         ...prev,
@@ -133,15 +162,26 @@ export function useConversations(
       let liveId = startingId
       let assistantContent = ''
       let assistantRecs: RecommendationItem[] | undefined
+      let streamErrorMessage: string | null = null
+
+      // Guard SSE-driven setMessages so a late chunk after the user switched
+      // conversations doesn't corrupt the now-active view. liveId tracks the
+      // conversation this stream is bound to; activeIdRef tracks the UI's
+      // currently-displayed one.
+      const isStreamStillActive = () =>
+        !signal.aborted && liveId === activeIdRef.current
 
       try {
         const stream = intentIsSearch
-          ? streamSearch(trimmed, accessToken, startingId)
-          : streamChat(trimmed, accessToken, startingId)
+          ? streamSearch(trimmed, accessToken, startingId, signal)
+          : streamChat(trimmed, accessToken, startingId, signal)
 
         for await (const event of stream) {
+          if (signal.aborted) break
+
           if (event.type === 'conversation') {
             liveId = event.id
+            activeIdRef.current = event.id
             setActiveId(event.id)
             // Prepend an optimistic conversation row; the real title/timestamps
             // will be corrected on the next listConversations refresh.
@@ -156,7 +196,9 @@ export function useConversations(
             ])
           } else if (event.type === 'recommendations') {
             assistantRecs = event.items
+            if (!isStreamStillActive()) continue
             setMessages(prev => {
+              if (liveId !== activeIdRef.current) return prev
               const updated = [...prev]
               const last = updated[updated.length - 1]
               if (last && last.role === 'assistant') {
@@ -169,22 +211,32 @@ export function useConversations(
             })
           } else if (event.type === 'content') {
             assistantContent += event.content || ''
-            setMessages(prev => {
-              const updated = [...prev]
-              updated[updated.length - 1] = {
-                role: 'assistant',
-                content: assistantContent,
-                recommendations: assistantRecs,
-              }
-              return updated
-            })
+            if (isStreamStillActive()) {
+              setMessages(prev => {
+                if (liveId !== activeIdRef.current) return prev
+                const updated = [...prev]
+                updated[updated.length - 1] = {
+                  role: 'assistant',
+                  content: assistantContent,
+                  recommendations: assistantRecs,
+                }
+                return updated
+              })
+            }
             if (event.done) break
+          } else if (event.type === 'error') {
+            // Backend signaled mid-stream failure. Surface the message and
+            // stop processing — backend has already persisted whatever it
+            // could (user message + sentinel assistant turn).
+            streamErrorMessage = event.message || 'AI 请求失败'
+            break
           }
         }
 
         // Bump the active conversation's updatedAt and re-sort so the just-used
-        // one floats to the top.
-        if (liveId) {
+        // one floats to the top. Skip if the user switched away (liveId no
+        // longer matches what's on screen) — listConversations will reconcile.
+        if (liveId && !signal.aborted) {
           setConversations(prev => {
             const idx = prev.findIndex(c => c.id === liveId)
             if (idx < 0) return prev
@@ -193,13 +245,40 @@ export function useConversations(
             return next
           })
         }
+
+        if (streamErrorMessage && isStreamStillActive()) {
+          setError(streamErrorMessage)
+          // Drop only the trailing placeholder (avoid touching empty
+          // assistant turns deeper in history).
+          setMessages(prev => {
+            if (liveId !== activeIdRef.current) return prev
+            const last = prev[prev.length - 1]
+            if (last && last.role === 'assistant' && !last.content) {
+              return prev.slice(0, -1)
+            }
+            return prev
+          })
+        }
       } catch (err: unknown) {
+        // Aborted by selectConversation/newConversation/deleteConversation/unmount —
+        // intentional, user has already moved on. Don't pollute their view.
+        if (signal.aborted) return
+        if (!isStreamStillActive()) return
         setError(err instanceof Error ? err.message : 'AI 请求失败')
-        // Drop the empty assistant placeholder on failure.
-        setMessages(prev => prev.filter(m => !(m.role === 'assistant' && !m.content)))
+        setMessages(prev => {
+          if (liveId !== activeIdRef.current) return prev
+          const last = prev[prev.length - 1]
+          if (last && last.role === 'assistant' && !last.content) {
+            return prev.slice(0, -1)
+          }
+          return prev
+        })
       } finally {
         streamingRef.current = false
         setStreaming(false)
+        if (streamControllerRef.current === controller) {
+          streamControllerRef.current = null
+        }
       }
     },
     [accessToken, activeId],
@@ -219,22 +298,26 @@ export function useConversations(
 
   const deleteConversation = useCallback(
     async (id: string) => {
+      // Abort any in-flight stream first — without this, a stream that was
+      // writing to the row we're about to delete will trip the FK and 500.
+      if (id === activeIdRef.current) {
+        abortInFlightStream()
+      }
       await dataLayer.deleteConversation(id)
-      setConversations(prev => {
-        const next = prev.filter(c => c.id !== id)
-        if (id === activeId) {
-          // Active one was removed — pick the next most recent or reset.
-          if (next.length > 0) {
-            void selectConversation(next[0].id)
-          } else {
-            setActiveId(null)
-            setMessages([])
-          }
+      setConversations(prev => prev.filter(c => c.id !== id))
+      if (id === activeIdRef.current) {
+        // Active one was removed — pick the next most recent (post-delete)
+        // or reset to the welcome state.
+        const remaining = conversations.filter(c => c.id !== id)
+        if (remaining.length > 0) {
+          void selectConversation(remaining[0].id)
+        } else {
+          setActiveId(null)
+          setMessages([])
         }
-        return next
-      })
+      }
     },
-    [activeId, dataLayer, selectConversation],
+    [abortInFlightStream, conversations, dataLayer, selectConversation],
   )
 
   return {

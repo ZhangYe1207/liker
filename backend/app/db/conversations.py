@@ -90,20 +90,34 @@ async def delete_conversation(
 # ---------------------------------------------------------------------------
 
 
-async def list_messages(client: Client, conversation_id: str) -> list[dict]:
-    """Return all messages in a conversation, chronological order.
+async def list_messages(
+    client: Client, conversation_id: str, limit: int | None = None
+) -> list[dict]:
+    """Return messages in a conversation, chronological order.
+
+    When *limit* is set, returns the **latest** ``limit`` messages
+    (still chronological): the query is ordered DESC + LIMIT, then
+    reversed in memory. Use this for LLM-context loading to bound
+    token usage on long conversations.
 
     Caller is responsible for verifying the user owns the conversation
     (typically by calling ``get_conversation`` first).
     """
-    result = (
+    query = (
         client.table("messages")
         .select("id, role, content, recommendations, created_at")
         .eq("conversation_id", conversation_id)
-        .order("created_at", desc=False)
-        .execute()
     )
-    return result.data
+    if limit is None:
+        result = query.order("created_at", desc=False).execute()
+        return result.data
+
+    result = (
+        query.order("created_at", desc=True).limit(limit).execute()
+    )
+    rows = list(result.data or [])
+    rows.reverse()
+    return rows
 
 
 async def insert_message(

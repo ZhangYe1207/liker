@@ -21,11 +21,28 @@ from supabase import Client
 
 from app.db.conversations import (
     create_conversation,
+    get_conversation,
     insert_message,
     list_messages,
 )
 
+
+class ConversationNotFoundError(Exception):
+    """Caller passed a conversation_id that the current user does not own.
+
+    Raised by :func:`ensure_conversation` for both missing rows and
+    cross-tenant access attempts — service-role key bypasses RLS, so the
+    helper has to enforce tenant isolation explicitly.
+    """
+
+
 TITLE_MAX_LEN = 20
+
+# Cap how many recent messages we replay into the LLM. ~20 user/assistant
+# turns is plenty for the analyst persona and stays well under every
+# provider's context window even with long replies. Older turns are
+# silently dropped — if we ever need rolling-summary memory, do it here.
+LLM_HISTORY_WINDOW = 40
 
 
 def _title_from_message(message: str) -> str:
@@ -50,9 +67,14 @@ async def ensure_conversation(
 
     If *conversation_id* is ``None``, creates a new conversation with a title
     derived from *first_user_message* and returns ``is_new=True``. Otherwise
-    returns the given id as-is.
+    verifies the conversation belongs to *user_id* and returns it; raises
+    :class:`ConversationNotFoundError` when the row is missing or owned by
+    another user.
     """
     if conversation_id:
+        existing = await get_conversation(client, user_id, conversation_id)
+        if existing is None:
+            raise ConversationNotFoundError(conversation_id)
         return conversation_id, False
 
     title = _title_from_message(first_user_message)
@@ -63,12 +85,16 @@ async def ensure_conversation(
 async def load_history(
     client: Client, conversation_id: str
 ) -> list[dict[str, str]]:
-    """Load messages for *conversation_id* as a list of ``{role, content}`` dicts.
+    """Load recent messages for *conversation_id* as ``{role, content}`` dicts.
+
+    Bounded by :data:`LLM_HISTORY_WINDOW` so very long conversations don't
+    blow up the LLM context window or generate O(N²) traffic. Returns
+    chronological order with the *latest* turns kept; oldest are dropped.
 
     Strips the ``recommendations`` / ``id`` / ``created_at`` fields — the LLM
     only needs role + content to continue the conversation.
     """
-    rows = await list_messages(client, conversation_id)
+    rows = await list_messages(client, conversation_id, limit=LLM_HISTORY_WINDOW)
     return [{"role": r["role"], "content": r["content"]} for r in rows]
 
 

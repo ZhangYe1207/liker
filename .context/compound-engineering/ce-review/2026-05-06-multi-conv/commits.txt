@@ -1,0 +1,11 @@
+6dc3cd3 docs(plan): close AI chat multi-conversation plan
+cfc5936 chore(frontend): add vite/client types for import.meta.env
+079836e feat(frontend): AIChatPanel consumes useConversations with title-bar dropdown
+ddf217e feat(frontend): useConversations hook for multi-conversation state
+8ee7aac feat(frontend): types + DataLayer hooks for AI conversations
+d6336c7 feat(ai): persist AI chat/search to conversations + load multi-turn history
+1e1b111 test(backend): align provider tests with 1536-dim MiniMax native API
+19d43d3 feat(backend): add /api/conversations REST router
+4eccaee feat(backend): add conversations DB layer + Pydantic schemas
+28fbd24 feat(db): add conversations + messages tables for AI chat persistence
+08631c9 docs: add brainstorm/plan/acceptance for AI chat multi-conversation

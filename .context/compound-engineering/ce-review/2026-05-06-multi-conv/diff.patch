@@ -1,0 +1,4186 @@
+diff --git a/backend/app/db/conversations.py b/backend/app/db/conversations.py
+new file mode 100644
+index 0000000..dcca5df
+--- /dev/null
++++ b/backend/app/db/conversations.py
+@@ -0,0 +1,129 @@
++"""Database operations for AI chat conversations and messages.
++
++Backend uses the Supabase service-role key which bypasses RLS. Every
++function here that writes or reads scoped data filters ``user_id``
++(conversations) or joins through ``conversations`` (messages) to
++enforce tenant isolation as defense-in-depth.
++"""
++
++from __future__ import annotations
++
++from supabase import Client
++
++
++# ---------------------------------------------------------------------------
++# Conversations
++# ---------------------------------------------------------------------------
++
++
++async def list_conversations(client: Client, user_id: str) -> list[dict]:
++    """Return all conversations for a user, most recently active first."""
++    result = (
++        client.table("conversations")
++        .select("id, title, created_at, updated_at")
++        .eq("user_id", user_id)
++        .order("updated_at", desc=True)
++        .execute()
++    )
++    return result.data
++
++
++async def get_conversation(
++    client: Client, user_id: str, conversation_id: str
++) -> dict | None:
++    """Fetch a single conversation if it belongs to the user."""
++    result = (
++        client.table("conversations")
++        .select("id, title, created_at, updated_at")
++        .eq("id", conversation_id)
++        .eq("user_id", user_id)
++        .execute()
++    )
++    return result.data[0] if result.data else None
++
++
++async def create_conversation(
++    client: Client, user_id: str, title: str
++) -> dict:
++    """Insert a new conversation and return the created row."""
++    result = (
++        client.table("conversations")
++        .insert({"user_id": user_id, "title": title})
++        .execute()
++    )
++    return result.data[0]
++
++
++async def update_conversation_title(
++    client: Client, user_id: str, conversation_id: str, title: str
++) -> dict | None:
++    """Rename a conversation; returns the updated row or None if not found."""
++    result = (
++        client.table("conversations")
++        .update({"title": title})
++        .eq("id", conversation_id)
++        .eq("user_id", user_id)
++        .execute()
++    )
++    return result.data[0] if result.data else None
++
++
++async def delete_conversation(
++    client: Client, user_id: str, conversation_id: str
++) -> bool:
++    """Hard-delete a conversation. Messages cascade via FK.
++
++    Returns True if a row was deleted, False if not found / not owned.
++    """
++    result = (
++        client.table("conversations")
++        .delete()
++        .eq("id", conversation_id)
++        .eq("user_id", user_id)
++        .execute()
++    )
++    return bool(result.data)
++
++
++# ---------------------------------------------------------------------------
++# Messages
++# ---------------------------------------------------------------------------
++
++
++async def list_messages(client: Client, conversation_id: str) -> list[dict]:
++    """Return all messages in a conversation, chronological order.
++
++    Caller is responsible for verifying the user owns the conversation
++    (typically by calling ``get_conversation`` first).
++    """
++    result = (
++        client.table("messages")
++        .select("id, role, content, recommendations, created_at")
++        .eq("conversation_id", conversation_id)
++        .order("created_at", desc=False)
++        .execute()
++    )
++    return result.data
++
++
++async def insert_message(
++    client: Client,
++    conversation_id: str,
++    role: str,
++    content: str,
++    recommendations: list[dict] | None = None,
++) -> dict:
++    """Insert one chat turn.
++
++    ``role`` must be ``'user'`` or ``'assistant'`` (enforced by DB CHECK).
++    ``recommendations`` is stored as jsonb; ``None`` → SQL NULL.
++    """
++    payload: dict = {
++        "conversation_id": conversation_id,
++        "role": role,
++        "content": content,
++    }
++    if recommendations is not None:
++        payload["recommendations"] = recommendations
++    result = client.table("messages").insert(payload).execute()
++    return result.data[0]
+diff --git a/backend/app/main.py b/backend/app/main.py
+index 15e1c07..e30f2bb 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -70,10 +70,12 @@ def create_app() -> FastAPI:
+     from app.routers.embeddings import router as embeddings_router
+     from app.routers.chat import router as chat_router
+     from app.routers.search import router as search_router
++    from app.routers.conversations import router as conversations_router
+ 
+     app.include_router(embeddings_router)
+     app.include_router(chat_router)
+     app.include_router(search_router)
++    app.include_router(conversations_router)
+ 
+     return app
+ 
+diff --git a/backend/app/routers/chat.py b/backend/app/routers/chat.py
+index e46e01f..9b5476a 100644
+--- a/backend/app/routers/chat.py
++++ b/backend/app/routers/chat.py
+@@ -13,7 +13,7 @@ from app.config import get_settings
+ from app.db.supabase_client import get_supabase_client
+ from app.llm import create_chat_provider, create_embedding_provider
+ from app.schemas import ResponseEnvelope
+-from app.services.rag import chat_with_rag
++from app.services.rag import chat_with_rag, chat_with_rag_persistent
+ 
+ router = APIRouter(prefix="/api/ai", tags=["ai"])
+ 
+@@ -21,6 +21,7 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
+ class ChatRequest(BaseModel):
+     message: str
+     stream: bool = True
++    conversation_id: str | None = None
+ 
+ 
+ @router.post("/chat")
+@@ -39,27 +40,29 @@ async def ai_chat(
+     if request.stream:
+ 
+         async def event_generator():
+-            result = await chat_with_rag(
++            events = chat_with_rag_persistent(
+                 chat_provider,
+                 embedding_provider,
+                 db_client,
+                 user_id,
+                 request.message,
+-                stream=True,
++                request.conversation_id,
+             )
+-            async for chunk in result:
+-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
++            async for event in events:
++                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+ 
+         return StreamingResponse(
+             event_generator(), media_type="text/event-stream"
+         )
+-    else:
+-        result = await chat_with_rag(
+-            chat_provider,
+-            embedding_provider,
+-            db_client,
+-            user_id,
+-            request.message,
+-            stream=False,
+-        )
+-        return ResponseEnvelope(data=result)
++
++    # Non-streaming path kept for ad-hoc callers (not wired into the UI)
++    # and intentionally bypasses persistence.
++    result = await chat_with_rag(
++        chat_provider,
++        embedding_provider,
++        db_client,
++        user_id,
++        request.message,
++        stream=False,
++    )
++    return ResponseEnvelope(data=result)
+diff --git a/backend/app/routers/conversations.py b/backend/app/routers/conversations.py
+new file mode 100644
+index 0000000..27b2bb1
+--- /dev/null
++++ b/backend/app/routers/conversations.py
+@@ -0,0 +1,79 @@
++"""REST endpoints for AI chat conversations (list / rename / delete).
++
++Creation is **not** exposed here: new conversations are created lazily
++by ``/api/ai/chat`` when the first user message arrives. See
++``services/rag.py`` and ``services/search.py`` for that path.
++"""
++
++from __future__ import annotations
++
++from fastapi import APIRouter, Depends, HTTPException
++
++from app.auth import get_current_user_id
++from app.db.conversations import (
++    delete_conversation,
++    list_conversations,
++    list_messages,
++    update_conversation_title,
++    get_conversation,
++)
++from app.db.supabase_client import get_supabase_client
++from app.schemas import RenameConversationRequest, ResponseEnvelope
++
++router = APIRouter(prefix="/api/conversations", tags=["conversations"])
++
++
++@router.get("", response_model=ResponseEnvelope)
++async def list_user_conversations(
++    user_id: str = Depends(get_current_user_id),
++) -> ResponseEnvelope:
++    """Return all conversations for the caller, most recent first."""
++    client = get_supabase_client()
++    rows = await list_conversations(client, user_id)
++    return ResponseEnvelope(data=rows)
++
++
++@router.get("/{conversation_id}/messages", response_model=ResponseEnvelope)
++async def get_conversation_messages(
++    conversation_id: str,
++    user_id: str = Depends(get_current_user_id),
++) -> ResponseEnvelope:
++    """Return messages for a conversation the caller owns (chronological)."""
++    client = get_supabase_client()
++    owned = await get_conversation(client, user_id, conversation_id)
++    if not owned:
++        raise HTTPException(status_code=404, detail="Conversation not found")
++    rows = await list_messages(client, conversation_id)
++    return ResponseEnvelope(data=rows)
++
++
++@router.patch("/{conversation_id}", response_model=ResponseEnvelope)
++async def rename_conversation(
++    conversation_id: str,
++    payload: RenameConversationRequest,
++    user_id: str = Depends(get_current_user_id),
++) -> ResponseEnvelope:
++    """Rename a conversation. 404 if missing or not owned."""
++    title = payload.title.strip()
++    if not title:
++        raise HTTPException(status_code=400, detail="Title cannot be empty")
++    client = get_supabase_client()
++    updated = await update_conversation_title(
++        client, user_id, conversation_id, title
++    )
++    if not updated:
++        raise HTTPException(status_code=404, detail="Conversation not found")
++    return ResponseEnvelope(data=updated)
++
++
++@router.delete("/{conversation_id}", response_model=ResponseEnvelope)
++async def remove_conversation(
++    conversation_id: str,
++    user_id: str = Depends(get_current_user_id),
++) -> ResponseEnvelope:
++    """Hard-delete a conversation (messages cascade via FK)."""
++    client = get_supabase_client()
++    ok = await delete_conversation(client, user_id, conversation_id)
++    if not ok:
++        raise HTTPException(status_code=404, detail="Conversation not found")
++    return ResponseEnvelope(data={"deleted": True})
+diff --git a/backend/app/routers/search.py b/backend/app/routers/search.py
+index 71c8853..46dac9f 100644
+--- a/backend/app/routers/search.py
++++ b/backend/app/routers/search.py
+@@ -13,7 +13,7 @@ from app.config import get_settings
+ from app.db.supabase_client import get_supabase_client
+ from app.llm import create_chat_provider, create_embedding_provider
+ from app.schemas import ResponseEnvelope
+-from app.services.search import search_with_tools
++from app.services.search import search_with_tools, search_with_tools_persistent
+ 
+ router = APIRouter(prefix="/api/ai", tags=["ai"])
+ 
+@@ -21,6 +21,7 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
+ class SearchRequest(BaseModel):
+     query: str
+     stream: bool = True
++    conversation_id: str | None = None
+ 
+ 
+ @router.post("/search")
+@@ -37,37 +38,34 @@ async def ai_search(
+     if request.stream:
+ 
+         async def event_generator():
+-            result, recommendations = await search_with_tools(
++            events = search_with_tools_persistent(
+                 chat_provider,
+                 embedding_provider,
+                 db_client,
+                 user_id,
+                 request.query,
+-                stream=True,
++                request.conversation_id,
+                 tmdb_api_key=tmdb_api_key,
+             )
+-            # First send recommendations as a special event
+-            if recommendations:
+-                yield (
+-                    f"data: {json.dumps({'type': 'recommendations', 'items': recommendations}, ensure_ascii=False)}\n\n"
+-                )
+-            # Then stream the LLM response
+-            async for chunk in result:
+-                yield f"data: {json.dumps({'type': 'content', **chunk}, ensure_ascii=False)}\n\n"
++            async for event in events:
++                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+ 
+         return StreamingResponse(
+             event_generator(), media_type="text/event-stream"
+         )
+-    else:
+-        result, recommendations = await search_with_tools(
+-            chat_provider,
+-            embedding_provider,
+-            db_client,
+-            user_id,
+-            request.query,
+-            stream=False,
+-            tmdb_api_key=tmdb_api_key,
+-        )
+-        return ResponseEnvelope(
+-            data={"response": result, "recommendations": recommendations}
+-        )
++
++    # Non-streaming path kept for ad-hoc callers and intentionally bypasses
++    # persistence — it's the only way to return the full recommendations array
++    # alongside the synthesised response.
++    result, recommendations = await search_with_tools(
++        chat_provider,
++        embedding_provider,
++        db_client,
++        user_id,
++        request.query,
++        stream=False,
++        tmdb_api_key=tmdb_api_key,
++    )
++    return ResponseEnvelope(
++        data={"response": result, "recommendations": recommendations}
++    )
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+index 7e41f52..5497895 100644
+--- a/backend/app/schemas.py
++++ b/backend/app/schemas.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++from datetime import datetime
+ from typing import Any
+ 
+ from pydantic import BaseModel
+@@ -13,3 +14,31 @@ class ResponseEnvelope(BaseModel):
+     data: Any = None
+     error: str | None = None
+     metadata: dict[str, Any] | None = None
++
++
++# ---------------------------------------------------------------------------
++# AI chat conversations
++# ---------------------------------------------------------------------------
++
++
++class ConversationOut(BaseModel):
++    """Conversation row returned to the frontend."""
++
++    id: str
++    title: str
++    created_at: datetime
++    updated_at: datetime
++
++
++class MessageOut(BaseModel):
++    """Message row returned to the frontend."""
++
++    id: str
++    role: str
++    content: str
++    recommendations: list[dict[str, Any]] | None = None
++    created_at: datetime
++
++
++class RenameConversationRequest(BaseModel):
++    title: str
+diff --git a/backend/app/services/conversation_helpers.py b/backend/app/services/conversation_helpers.py
+new file mode 100644
+index 0000000..c9df14b
+--- /dev/null
++++ b/backend/app/services/conversation_helpers.py
+@@ -0,0 +1,95 @@
++"""Shared helpers for persisting chat/search interactions to conversations.
++
++Both ``/api/ai/chat`` and ``/api/ai/search`` share the same persistence
++contract:
++
++1. Lazily create a conversation when the caller passes ``conversation_id=None``.
++2. Eagerly write the user's message before hitting the LLM (so refresh-mid-stream
++   still shows the prompt).
++3. After the stream completes, write the assistant's message with the
++   accumulated content (and recommendations, for search).
++
++Helpers here are thin wrappers over ``db.conversations`` with the title-truncation
++and history-shape conversions that the services care about.
++"""
++
++from __future__ import annotations
++
++from typing import Any
++
++from supabase import Client
++
++from app.db.conversations import (
++    create_conversation,
++    insert_message,
++    list_messages,
++)
++
++TITLE_MAX_LEN = 20
++
++
++def _title_from_message(message: str) -> str:
++    """Truncate the first user message to form a conversation title.
++
++    Strips leading/trailing whitespace so multi-line prompts produce a
++    readable title.
++    """
++    cleaned = (message or "").strip()
++    if len(cleaned) <= TITLE_MAX_LEN:
++        return cleaned or "新对话"
++    return cleaned[:TITLE_MAX_LEN]
++
++
++async def ensure_conversation(
++    client: Client,
++    user_id: str,
++    conversation_id: str | None,
++    first_user_message: str,
++) -> tuple[str, bool]:
++    """Return ``(conversation_id, is_new)``.
++
++    If *conversation_id* is ``None``, creates a new conversation with a title
++    derived from *first_user_message* and returns ``is_new=True``. Otherwise
++    returns the given id as-is.
++    """
++    if conversation_id:
++        return conversation_id, False
++
++    title = _title_from_message(first_user_message)
++    row = await create_conversation(client, user_id, title)
++    return row["id"], True
++
++
++async def load_history(
++    client: Client, conversation_id: str
++) -> list[dict[str, str]]:
++    """Load messages for *conversation_id* as a list of ``{role, content}`` dicts.
++
++    Strips the ``recommendations`` / ``id`` / ``created_at`` fields — the LLM
++    only needs role + content to continue the conversation.
++    """
++    rows = await list_messages(client, conversation_id)
++    return [{"role": r["role"], "content": r["content"]} for r in rows]
++
++
++async def persist_user_message(
++    client: Client, conversation_id: str, content: str
++) -> dict[str, Any]:
++    """Write the user's message. Thin alias to keep call sites expressive."""
++    return await insert_message(client, conversation_id, "user", content)
++
++
++async def persist_assistant_message(
++    client: Client,
++    conversation_id: str,
++    content: str,
++    recommendations: list[dict] | None = None,
++) -> dict[str, Any]:
++    """Write the assistant's final message after the stream completes."""
++    return await insert_message(
++        client,
++        conversation_id,
++        "assistant",
++        content,
++        recommendations=recommendations,
++    )
+diff --git a/backend/app/services/rag.py b/backend/app/services/rag.py
+index 33c2d6d..e144e3e 100644
+--- a/backend/app/services/rag.py
++++ b/backend/app/services/rag.py
+@@ -9,6 +9,12 @@ from supabase import Client
+ from app.db.embeddings import similarity_search
+ from app.db.items import get_user_items
+ from app.llm.protocols import ChatProvider, EmbeddingProvider
++from app.services.conversation_helpers import (
++    ensure_conversation,
++    load_history,
++    persist_assistant_message,
++    persist_user_message,
++)
+ 
+ SYSTEM_PROMPT = """你是 Liker 的 AI 品味分析师。你的任务是根据用户的收藏数据分析他们的品味偏好。
+ 
+@@ -71,6 +77,29 @@ def format_context(items: list[dict]) -> str:
+     return "\n".join(lines)
+ 
+ 
++def _build_llm_messages(
++    history: list[dict],
++    context_text: str,
++    current_message: str,
++) -> list[dict]:
++    """Compose the message array handed to the LLM.
++
++    History already contains the *current* user message (we persisted it
++    before loading history), so we drop the last entry and re-attach a
++    context-augmented version — prior assistant turns stay intact.
++    """
++    prior = history[:-1] if history else []
++    augmented_user = {
++        "role": "user",
++        "content": f"【收藏数据参考】\n{context_text}\n\n【用户问题】\n{current_message}",
++    }
++    return [
++        {"role": "system", "content": SYSTEM_PROMPT},
++        *prior,
++        augmented_user,
++    ]
++
++
+ async def chat_with_rag(
+     chat_provider: ChatProvider,
+     embedding_provider: EmbeddingProvider,
+@@ -78,8 +107,20 @@ async def chat_with_rag(
+     user_id: str,
+     message: str,
+     stream: bool = False,
++    conversation_id: str | None = None,
+ ) -> dict | AsyncIterator[dict]:
+-    """Full RAG pipeline: retrieve -> assemble -> generate."""
++    """Full RAG pipeline: retrieve -> assemble -> generate.
++
++    When *conversation_id* is provided (or ``None`` with persistence enabled),
++    the call is bound to a stored conversation: the user message is written
++    before generation, history is loaded for multi-turn context, and the
++    assistant message is persisted after the stream completes.
++
++    Legacy single-turn callers that still pass ``conversation_id=None`` will
++    get a new conversation created lazily; pass the router wrapper
++    ``chat_with_rag_persistent`` when you need the new id threaded back to
++    the caller via SSE.
++    """
+     context_items, _ = await retrieve_context(
+         embedding_provider, db_client, user_id, message
+     )
+@@ -94,3 +135,51 @@ async def chat_with_rag(
+     ]
+ 
+     return await chat_provider.chat(messages, stream=stream)
++
++
++async def chat_with_rag_persistent(
++    chat_provider: ChatProvider,
++    embedding_provider: EmbeddingProvider,
++    db_client: Client,
++    user_id: str,
++    message: str,
++    conversation_id: str | None,
++) -> AsyncIterator[dict]:
++    """Streaming RAG with conversation persistence and multi-turn history.
++
++    Yields SSE-ready event dicts in this order:
++
++    1. ``{"type": "conversation", "id": "..."}`` — only when a new conversation
++       was lazily created for this request.
++    2. ``{"type": "content", "content": "...", "done": bool}`` — one per LLM chunk.
++
++    The user message is persisted **before** the LLM call; the assistant
++    message is persisted **after** the stream finishes, with the accumulated
++    content.
++    """
++    conv_id, is_new = await ensure_conversation(
++        db_client, user_id, conversation_id, message
++    )
++    if is_new:
++        yield {"type": "conversation", "id": conv_id}
++
++    await persist_user_message(db_client, conv_id, message)
++
++    context_items, _ = await retrieve_context(
++        embedding_provider, db_client, user_id, message
++    )
++    context_text = format_context(context_items)
++
++    history = await load_history(db_client, conv_id)
++    llm_messages = _build_llm_messages(history, context_text, message)
++
++    stream = await chat_provider.chat(llm_messages, stream=True)
++
++    accumulated = ""
++    async for chunk in stream:
++        piece = chunk.get("content", "")
++        if piece:
++            accumulated += piece
++        yield {"type": "content", **chunk}
++
++    await persist_assistant_message(db_client, conv_id, accumulated)
+diff --git a/backend/app/services/search.py b/backend/app/services/search.py
+index baf0d88..7e77ffd 100644
+--- a/backend/app/services/search.py
++++ b/backend/app/services/search.py
+@@ -8,6 +8,12 @@ from typing import AsyncIterator
+ from app.db.embeddings import similarity_search
+ from app.db.items import get_user_items
+ from app.llm.protocols import ChatProvider, EmbeddingProvider
++from app.services.conversation_helpers import (
++    ensure_conversation,
++    load_history,
++    persist_assistant_message,
++    persist_user_message,
++)
+ from app.services.external_apis import search_books, search_movies, search_music
+ 
+ SEARCH_SYSTEM_PROMPT = """你是 Liker 的 AI 搜索助手。用户会用自然语言搜索内容。
+@@ -222,3 +228,103 @@ async def search_with_tools(
+     final_result = await chat_provider.chat(messages, stream=stream)
+ 
+     return final_result, recommendations
++
++
++async def search_with_tools_persistent(
++    chat_provider: ChatProvider,
++    embedding_provider: EmbeddingProvider,
++    db_client: object,
++    user_id: str,
++    query: str,
++    conversation_id: str | None,
++    tmdb_api_key: str = "",
++):
++    """Streaming search-with-tools that persists to the conversations table.
++
++    Yields SSE-ready event dicts in this order:
++
++    1. ``{"type": "conversation", "id": "..."}`` — only when a new conversation
++       was lazily created for this request.
++    2. ``{"type": "recommendations", "items": [...]}`` — only when external
++       search produced cards (emitted before content so the frontend can
++       render placeholders).
++    3. ``{"type": "content", "content": "...", "done": bool}`` — one per LLM chunk.
++
++    The assistant message is persisted with ``recommendations`` attached so
++    the UI can rehydrate cards when loading history later.
++    """
++    conv_id, is_new = await ensure_conversation(
++        db_client, user_id, conversation_id, query
++    )
++    if is_new:
++        yield {"type": "conversation", "id": conv_id}
++
++    await persist_user_message(db_client, conv_id, query)
++
++    history = await load_history(db_client, conv_id)
++    prior_turns = history[:-1] if history else []
++
++    messages: list[dict] = [
++        {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
++        *prior_turns,
++        {"role": "user", "content": query},
++    ]
++
++    # Step 1: tool selection (non-streaming so we can inspect tool_calls)
++    result = await chat_provider.chat(messages, tools=TOOL_DEFINITIONS, stream=False)
++
++    tool_results: list[dict] = []
++    recommendations: list[dict] = []
++
++    if result.get("tool_calls"):
++        for tool_call in result["tool_calls"]:
++            name = tool_call["name"]
++            args = tool_call["arguments"]
++
++            if name == "search_collection":
++                tool_result = await execute_search_collection(
++                    embedding_provider, db_client, user_id, args
++                )
++                tool_results.append({"tool": name, "result": tool_result})
++            elif name == "search_external":
++                tool_result = await execute_search_external(args, tmdb_api_key)
++                recommendations.extend(tool_result)
++                tool_results.append({"tool": name, "result": tool_result})
++            elif name == "get_taste_profile":
++                tool_result = await execute_get_taste_profile(
++                    db_client, user_id, args
++                )
++                tool_results.append({"tool": name, "result": tool_result})
++
++    if recommendations:
++        yield {"type": "recommendations", "items": recommendations}
++
++    messages.append(
++        {
++            "role": "assistant",
++            "content": result.get("content", ""),
++            "tool_calls": result.get("tool_calls"),
++        }
++    )
++    messages.append(
++        {
++            "role": "user",
++            "content": f"工具返回结果：\n{json.dumps(tool_results, ensure_ascii=False, default=str)}",
++        }
++    )
++
++    # Step 2: stream synthesis
++    final_stream = await chat_provider.chat(messages, stream=True)
++    accumulated = ""
++    async for chunk in final_stream:
++        piece = chunk.get("content", "")
++        if piece:
++            accumulated += piece
++        yield {"type": "content", **chunk}
++
++    await persist_assistant_message(
++        db_client,
++        conv_id,
++        accumulated,
++        recommendations=recommendations or None,
++    )
+diff --git a/backend/tests/test_conversation_helpers.py b/backend/tests/test_conversation_helpers.py
+new file mode 100644
+index 0000000..c76d936
+--- /dev/null
++++ b/backend/tests/test_conversation_helpers.py
+@@ -0,0 +1,476 @@
++"""Tests for services.conversation_helpers + chat/search persistent variants."""
++
++from __future__ import annotations
++
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++
++from app.services.conversation_helpers import (
++    _title_from_message,
++    ensure_conversation,
++    load_history,
++)
++from app.services.rag import chat_with_rag_persistent
++from app.services.search import search_with_tools_persistent
++
++TEST_USER_ID = "user-abc-123"
++EXISTING_CONV = "conv-existing"
++NEW_CONV = "conv-new"
++
++FAKE_EMBEDDING = [0.1] * 1536
++
++
++# ---------------------------------------------------------------------------
++# _title_from_message
++# ---------------------------------------------------------------------------
++
++
++class TestTitleFromMessage:
++    def test_short_message_returns_whole(self):
++        assert _title_from_message("推荐电影") == "推荐电影"
++
++    def test_long_message_truncated_to_20(self):
++        long = "推荐" * 30
++        result = _title_from_message(long)
++        assert len(result) == 20
++
++    def test_whitespace_stripped(self):
++        assert _title_from_message("   推荐   ") == "推荐"
++
++    def test_empty_returns_fallback(self):
++        assert _title_from_message("") == "新对话"
++        assert _title_from_message("   ") == "新对话"
++
++
++# ---------------------------------------------------------------------------
++# ensure_conversation
++# ---------------------------------------------------------------------------
++
++
++class TestEnsureConversation:
++    @pytest.mark.asyncio
++    async def test_existing_id_returns_as_is(self):
++        client = MagicMock()
++        conv_id, is_new = await ensure_conversation(
++            client, TEST_USER_ID, EXISTING_CONV, "hi"
++        )
++        assert conv_id == EXISTING_CONV
++        assert is_new is False
++
++    @pytest.mark.asyncio
++    async def test_none_creates_new(self):
++        client = MagicMock()
++        with patch(
++            "app.services.conversation_helpers.create_conversation",
++            new_callable=AsyncMock,
++            return_value={"id": NEW_CONV, "title": "推荐电影"},
++        ) as mock_create:
++            conv_id, is_new = await ensure_conversation(
++                client, TEST_USER_ID, None, "推荐电影"
++            )
++
++        assert conv_id == NEW_CONV
++        assert is_new is True
++        mock_create.assert_called_once_with(client, TEST_USER_ID, "推荐电影")
++
++    @pytest.mark.asyncio
++    async def test_title_truncated_on_create(self):
++        client = MagicMock()
++        long_message = "帮我分析一下我最近几个月看过的所有电影和读过的书"
++        with patch(
++            "app.services.conversation_helpers.create_conversation",
++            new_callable=AsyncMock,
++            return_value={"id": NEW_CONV, "title": long_message[:20]},
++        ) as mock_create:
++            await ensure_conversation(client, TEST_USER_ID, None, long_message)
++
++        sent_title = mock_create.call_args[0][2]
++        assert len(sent_title) == 20
++        assert sent_title == long_message[:20]
++
++
++# ---------------------------------------------------------------------------
++# load_history
++# ---------------------------------------------------------------------------
++
++
++class TestLoadHistory:
++    @pytest.mark.asyncio
++    async def test_strips_to_role_and_content(self):
++        client = MagicMock()
++        raw = [
++            {
++                "id": "m1",
++                "role": "user",
++                "content": "Hi",
++                "recommendations": None,
++                "created_at": "t",
++            },
++            {
++                "id": "m2",
++                "role": "assistant",
++                "content": "Hello",
++                "recommendations": [{"title": "X"}],
++                "created_at": "t+1",
++            },
++        ]
++        with patch(
++            "app.services.conversation_helpers.list_messages",
++            new_callable=AsyncMock,
++            return_value=raw,
++        ):
++            history = await load_history(client, EXISTING_CONV)
++
++        assert history == [
++            {"role": "user", "content": "Hi"},
++            {"role": "assistant", "content": "Hello"},
++        ]
++
++
++# ---------------------------------------------------------------------------
++# chat_with_rag_persistent
++# ---------------------------------------------------------------------------
++
++
++def _streaming_chat_provider(chunks: list[dict] | None = None) -> MagicMock:
++    if chunks is None:
++        chunks = [
++            {"content": "你", "done": False},
++            {"content": "好", "done": False},
++            {"content": "", "done": True},
++        ]
++
++    async def _stream():
++        for c in chunks:
++            yield c
++
++    provider = MagicMock()
++    provider.chat = AsyncMock(return_value=_stream())
++    return provider
++
++
++def _embedding_provider() -> MagicMock:
++    provider = MagicMock()
++    provider.embed = AsyncMock(return_value=[FAKE_EMBEDDING])
++    provider.dimensions = 1536
++    return provider
++
++
++class TestChatWithRagPersistent:
++    @pytest.mark.asyncio
++    async def test_emits_conversation_event_when_creating_new(self):
++        client = MagicMock()
++        chat_provider = _streaming_chat_provider()
++        embedding_provider = _embedding_provider()
++
++        with (
++            patch(
++                "app.services.rag.ensure_conversation",
++                new_callable=AsyncMock,
++                return_value=(NEW_CONV, True),
++            ),
++            patch(
++                "app.services.rag.persist_user_message",
++                new_callable=AsyncMock,
++            ),
++            patch(
++                "app.services.rag.retrieve_context",
++                new_callable=AsyncMock,
++                return_value=([], FAKE_EMBEDDING),
++            ),
++            patch(
++                "app.services.rag.load_history",
++                new_callable=AsyncMock,
++                return_value=[{"role": "user", "content": "推荐电影"}],
++            ),
++            patch(
++                "app.services.rag.persist_assistant_message",
++                new_callable=AsyncMock,
++            ),
++        ):
++            events = []
++            async for event in chat_with_rag_persistent(
++                chat_provider, embedding_provider, client, TEST_USER_ID,
++                "推荐电影", conversation_id=None,
++            ):
++                events.append(event)
++
++        assert events[0] == {"type": "conversation", "id": NEW_CONV}
++        content_events = [e for e in events if e["type"] == "content"]
++        assert len(content_events) == 3
++        assert content_events[-1]["done"] is True
++
++    @pytest.mark.asyncio
++    async def test_no_conversation_event_for_existing(self):
++        client = MagicMock()
++        chat_provider = _streaming_chat_provider()
++        embedding_provider = _embedding_provider()
++
++        with (
++            patch(
++                "app.services.rag.ensure_conversation",
++                new_callable=AsyncMock,
++                return_value=(EXISTING_CONV, False),
++            ),
++            patch(
++                "app.services.rag.persist_user_message",
++                new_callable=AsyncMock,
++            ),
++            patch(
++                "app.services.rag.retrieve_context",
++                new_callable=AsyncMock,
++                return_value=([], FAKE_EMBEDDING),
++            ),
++            patch(
++                "app.services.rag.load_history",
++                new_callable=AsyncMock,
++                return_value=[{"role": "user", "content": "继续"}],
++            ),
++            patch(
++                "app.services.rag.persist_assistant_message",
++                new_callable=AsyncMock,
++            ),
++        ):
++            events = [
++                e async for e in chat_with_rag_persistent(
++                    chat_provider, embedding_provider, client, TEST_USER_ID,
++                    "继续", conversation_id=EXISTING_CONV,
++                )
++            ]
++
++        types = [e["type"] for e in events]
++        assert "conversation" not in types
++
++    @pytest.mark.asyncio
++    async def test_persists_accumulated_assistant_content(self):
++        client = MagicMock()
++        chat_provider = _streaming_chat_provider(
++            [
++                {"content": "Hello ", "done": False},
++                {"content": "world", "done": False},
++                {"content": "", "done": True},
++            ]
++        )
++        embedding_provider = _embedding_provider()
++
++        with (
++            patch(
++                "app.services.rag.ensure_conversation",
++                new_callable=AsyncMock,
++                return_value=(EXISTING_CONV, False),
++            ),
++            patch(
++                "app.services.rag.persist_user_message",
++                new_callable=AsyncMock,
++            ),
++            patch(
++                "app.services.rag.retrieve_context",
++                new_callable=AsyncMock,
++                return_value=([], FAKE_EMBEDDING),
++            ),
++            patch(
++                "app.services.rag.load_history",
++                new_callable=AsyncMock,
++                return_value=[{"role": "user", "content": "say hello"}],
++            ),
++            patch(
++                "app.services.rag.persist_assistant_message",
++                new_callable=AsyncMock,
++            ) as mock_persist,
++        ):
++            _ = [
++                e async for e in chat_with_rag_persistent(
++                    chat_provider, embedding_provider, client, TEST_USER_ID,
++                    "say hello", conversation_id=EXISTING_CONV,
++                )
++            ]
++
++        mock_persist.assert_called_once_with(
++            client, EXISTING_CONV, "Hello world"
++        )
++
++    @pytest.mark.asyncio
++    async def test_history_is_threaded_into_llm_messages(self):
++        """Prior assistant turns should survive in the LLM messages; only the
++        last (current) user message gets RAG-augmented."""
++        client = MagicMock()
++        chat_provider = _streaming_chat_provider()
++        embedding_provider = _embedding_provider()
++
++        prior_history = [
++            {"role": "user", "content": "上一次的问题"},
++            {"role": "assistant", "content": "上一次的回答"},
++            {"role": "user", "content": "新问题"},  # current, gets augmented
++        ]
++
++        with (
++            patch(
++                "app.services.rag.ensure_conversation",
++                new_callable=AsyncMock,
++                return_value=(EXISTING_CONV, False),
++            ),
++            patch(
++                "app.services.rag.persist_user_message",
++                new_callable=AsyncMock,
++            ),
++            patch(
++                "app.services.rag.retrieve_context",
++                new_callable=AsyncMock,
++                return_value=([], FAKE_EMBEDDING),
++            ),
++            patch(
++                "app.services.rag.load_history",
++                new_callable=AsyncMock,
++                return_value=prior_history,
++            ),
++            patch(
++                "app.services.rag.persist_assistant_message",
++                new_callable=AsyncMock,
++            ),
++        ):
++            _ = [
++                e async for e in chat_with_rag_persistent(
++                    chat_provider, embedding_provider, client, TEST_USER_ID,
++                    "新问题", conversation_id=EXISTING_CONV,
++                )
++            ]
++
++        sent_messages = chat_provider.chat.call_args[0][0]
++        # system + 2 prior + 1 augmented current
++        assert len(sent_messages) == 4
++        assert sent_messages[0]["role"] == "system"
++        assert sent_messages[1] == {"role": "user", "content": "上一次的问题"}
++        assert sent_messages[2] == {"role": "assistant", "content": "上一次的回答"}
++        assert "新问题" in sent_messages[3]["content"]
++        assert "收藏数据参考" in sent_messages[3]["content"]
++
++
++# ---------------------------------------------------------------------------
++# search_with_tools_persistent
++# ---------------------------------------------------------------------------
++
++
++class TestSearchWithToolsPersistent:
++    @pytest.mark.asyncio
++    async def test_emits_recommendations_event_and_persists_them(self):
++        client = MagicMock()
++        recommendations = [{"title": "Inception", "year": "2010"}]
++
++        async def _final_stream():
++            yield {"content": "Here ", "done": False}
++            yield {"content": "you go", "done": False}
++            yield {"content": "", "done": True}
++
++        chat_provider = MagicMock()
++        chat_provider.chat = AsyncMock(
++            side_effect=[
++                {
++                    "content": "",
++                    "tool_calls": [
++                        {
++                            "name": "search_external",
++                            "arguments": {"query": "inception", "media_type": "movie"},
++                        }
++                    ],
++                },
++                _final_stream(),
++            ]
++        )
++        embedding_provider = _embedding_provider()
++
++        with (
++            patch(
++                "app.services.search.ensure_conversation",
++                new_callable=AsyncMock,
++                return_value=(NEW_CONV, True),
++            ),
++            patch(
++                "app.services.search.persist_user_message",
++                new_callable=AsyncMock,
++            ),
++            patch(
++                "app.services.search.load_history",
++                new_callable=AsyncMock,
++                return_value=[{"role": "user", "content": "find inception"}],
++            ),
++            patch(
++                "app.services.search.execute_search_external",
++                new_callable=AsyncMock,
++                return_value=recommendations,
++            ),
++            patch(
++                "app.services.search.persist_assistant_message",
++                new_callable=AsyncMock,
++            ) as mock_persist,
++        ):
++            events = [
++                e async for e in search_with_tools_persistent(
++                    chat_provider, embedding_provider, client, TEST_USER_ID,
++                    "find inception", conversation_id=None,
++                )
++            ]
++
++        types = [e["type"] for e in events]
++        # conversation must come before recommendations, which comes before content
++        assert types[0] == "conversation"
++        assert types[1] == "recommendations"
++        assert all(t == "content" for t in types[2:])
++
++        # Assistant message persisted with recommendations attached
++        mock_persist.assert_called_once()
++        call_args = mock_persist.call_args
++        assert call_args[0][1] == NEW_CONV
++        assert call_args[0][2] == "Here you go"
++        assert call_args[1]["recommendations"] == recommendations
++
++    @pytest.mark.asyncio
++    async def test_no_recommendations_event_when_empty(self):
++        client = MagicMock()
++
++        async def _final_stream():
++            yield {"content": "nothing", "done": False}
++            yield {"content": "", "done": True}
++
++        chat_provider = MagicMock()
++        chat_provider.chat = AsyncMock(
++            side_effect=[
++                {"content": "", "tool_calls": None},
++                _final_stream(),
++            ]
++        )
++        embedding_provider = _embedding_provider()
++
++        with (
++            patch(
++                "app.services.search.ensure_conversation",
++                new_callable=AsyncMock,
++                return_value=(EXISTING_CONV, False),
++            ),
++            patch(
++                "app.services.search.persist_user_message",
++                new_callable=AsyncMock,
++            ),
++            patch(
++                "app.services.search.load_history",
++                new_callable=AsyncMock,
++                return_value=[{"role": "user", "content": "hi"}],
++            ),
++            patch(
++                "app.services.search.persist_assistant_message",
++                new_callable=AsyncMock,
++            ) as mock_persist,
++        ):
++            events = [
++                e async for e in search_with_tools_persistent(
++                    chat_provider, embedding_provider, client, TEST_USER_ID,
++                    "hi", conversation_id=EXISTING_CONV,
++                )
++            ]
++
++        types = [e["type"] for e in events]
++        assert "recommendations" not in types
++        assert "conversation" not in types
++
++        # Persisted without recommendations
++        assert mock_persist.call_args[1]["recommendations"] is None
+diff --git a/backend/tests/test_conversations_db.py b/backend/tests/test_conversations_db.py
+new file mode 100644
+index 0000000..ff1336a
+--- /dev/null
++++ b/backend/tests/test_conversations_db.py
+@@ -0,0 +1,294 @@
++"""Tests for db.conversations CRUD helpers."""
++
++from __future__ import annotations
++
++from unittest.mock import MagicMock
++
++import pytest
++
++from app.db.conversations import (
++    create_conversation,
++    delete_conversation,
++    get_conversation,
++    insert_message,
++    list_conversations,
++    list_messages,
++    update_conversation_title,
++)
++
++TEST_USER_ID = "user-abc-123"
++OTHER_CONV_ID = "conv-999"
++CONV_ID = "conv-001"
++
++
++def _client_with_result(rows: list[dict]) -> MagicMock:
++    """Build a MagicMock that returns ``rows`` from the execute() chain.
++
++    Because supabase-py uses chained builders (``.table().select()...``),
++    we rely on MagicMock's auto-creation of attributes: every chained call
++    returns the same mock, and ``.execute()`` returns an object with a
++    ``.data`` attribute. We expose the terminal mock as ``client.terminal``
++    so tests can assert on the final call args.
++    """
++    client = MagicMock()
++    execute_result = MagicMock()
++    execute_result.data = rows
++    # All chained calls (.table, .select, .eq, .order, .insert, .update, .delete)
++    # return the same mock by default thanks to MagicMock's behavior.
++    client.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value = (
++        execute_result
++    )
++    client.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value = (
++        execute_result
++    )
++    client.table.return_value.insert.return_value.execute.return_value = (
++        execute_result
++    )
++    client.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value = (
++        execute_result
++    )
++    client.table.return_value.delete.return_value.eq.return_value.eq.return_value.execute.return_value = (
++        execute_result
++    )
++    return client
++
++
++# ---------------------------------------------------------------------------
++# list_conversations
++# ---------------------------------------------------------------------------
++
++
++class TestListConversations:
++    @pytest.mark.asyncio
++    async def test_filters_by_user_id(self):
++        rows = [{"id": CONV_ID, "title": "Hi", "updated_at": "2026-04-14T00:00:00Z", "created_at": "2026-04-14T00:00:00Z"}]
++        client = _client_with_result(rows)
++
++        result = await list_conversations(client, TEST_USER_ID)
++
++        client.table.assert_called_with("conversations")
++        # Verify .eq('user_id', user_id) was on the chain
++        client.table.return_value.select.return_value.eq.assert_called_with(
++            "user_id", TEST_USER_ID
++        )
++        # Verify ordering is updated_at DESC
++        order_mock = client.table.return_value.select.return_value.eq.return_value.order
++        order_mock.assert_called_with("updated_at", desc=True)
++        assert result == rows
++
++    @pytest.mark.asyncio
++    async def test_empty_result(self):
++        client = _client_with_result([])
++        result = await list_conversations(client, TEST_USER_ID)
++        assert result == []
++
++
++# ---------------------------------------------------------------------------
++# get_conversation
++# ---------------------------------------------------------------------------
++
++
++class TestGetConversation:
++    @pytest.mark.asyncio
++    async def test_returns_row_when_found(self):
++        row = {"id": CONV_ID, "title": "Hi", "updated_at": "2026-04-14T00:00:00Z", "created_at": "2026-04-14T00:00:00Z"}
++        client = _client_with_result([row])
++
++        result = await get_conversation(client, TEST_USER_ID, CONV_ID)
++        assert result == row
++
++    @pytest.mark.asyncio
++    async def test_filters_by_user_id(self):
++        client = _client_with_result([])
++
++        await get_conversation(client, TEST_USER_ID, CONV_ID)
++
++        # Inner .eq should be chained twice: once for id, once for user_id
++        first_eq = client.table.return_value.select.return_value.eq
++        first_eq.assert_called_with("id", CONV_ID)
++        second_eq = first_eq.return_value.eq
++        second_eq.assert_called_with("user_id", TEST_USER_ID)
++
++    @pytest.mark.asyncio
++    async def test_returns_none_when_missing(self):
++        client = _client_with_result([])
++        result = await get_conversation(client, TEST_USER_ID, CONV_ID)
++        assert result is None
++
++
++# ---------------------------------------------------------------------------
++# create_conversation
++# ---------------------------------------------------------------------------
++
++
++class TestCreateConversation:
++    @pytest.mark.asyncio
++    async def test_inserts_with_user_id_and_title(self):
++        row = {
++            "id": CONV_ID,
++            "title": "A new one",
++            "user_id": TEST_USER_ID,
++            "updated_at": "2026-04-14T00:00:00Z",
++            "created_at": "2026-04-14T00:00:00Z",
++        }
++        client = _client_with_result([row])
++
++        result = await create_conversation(client, TEST_USER_ID, "A new one")
++
++        client.table.assert_called_with("conversations")
++        client.table.return_value.insert.assert_called_with(
++            {"user_id": TEST_USER_ID, "title": "A new one"}
++        )
++        assert result == row
++
++
++# ---------------------------------------------------------------------------
++# update_conversation_title
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateConversationTitle:
++    @pytest.mark.asyncio
++    async def test_updates_and_filters_by_user(self):
++        row = {"id": CONV_ID, "title": "New Title", "updated_at": "2026-04-14T00:00:00Z", "created_at": "2026-04-14T00:00:00Z"}
++        client = _client_with_result([row])
++
++        result = await update_conversation_title(
++            client, TEST_USER_ID, CONV_ID, "New Title"
++        )
++
++        client.table.return_value.update.assert_called_with({"title": "New Title"})
++        first_eq = client.table.return_value.update.return_value.eq
++        first_eq.assert_called_with("id", CONV_ID)
++        second_eq = first_eq.return_value.eq
++        second_eq.assert_called_with("user_id", TEST_USER_ID)
++        assert result == row
++
++    @pytest.mark.asyncio
++    async def test_returns_none_when_not_owned(self):
++        client = _client_with_result([])  # update returns [] when filter matches nothing
++        result = await update_conversation_title(
++            client, TEST_USER_ID, OTHER_CONV_ID, "Hack"
++        )
++        assert result is None
++
++
++# ---------------------------------------------------------------------------
++# delete_conversation
++# ---------------------------------------------------------------------------
++
++
++class TestDeleteConversation:
++    @pytest.mark.asyncio
++    async def test_deletes_filtering_by_user(self):
++        client = _client_with_result([{"id": CONV_ID}])
++
++        result = await delete_conversation(client, TEST_USER_ID, CONV_ID)
++
++        client.table.assert_called_with("conversations")
++        first_eq = client.table.return_value.delete.return_value.eq
++        first_eq.assert_called_with("id", CONV_ID)
++        second_eq = first_eq.return_value.eq
++        second_eq.assert_called_with("user_id", TEST_USER_ID)
++        assert result is True
++
++    @pytest.mark.asyncio
++    async def test_returns_false_when_nothing_deleted(self):
++        client = _client_with_result([])
++        result = await delete_conversation(client, TEST_USER_ID, "missing")
++        assert result is False
++
++
++# ---------------------------------------------------------------------------
++# list_messages
++# ---------------------------------------------------------------------------
++
++
++class TestListMessages:
++    @pytest.mark.asyncio
++    async def test_filters_by_conversation_id_and_orders(self):
++        rows = [
++            {"id": "m1", "role": "user", "content": "Hi", "recommendations": None, "created_at": "2026-04-14T00:00:00Z"},
++            {"id": "m2", "role": "assistant", "content": "Hello", "recommendations": None, "created_at": "2026-04-14T00:00:01Z"},
++        ]
++        client = _client_with_result(rows)
++
++        result = await list_messages(client, CONV_ID)
++
++        client.table.assert_called_with("messages")
++        client.table.return_value.select.return_value.eq.assert_called_with(
++            "conversation_id", CONV_ID
++        )
++        order_mock = client.table.return_value.select.return_value.eq.return_value.order
++        order_mock.assert_called_with("created_at", desc=False)
++        assert result == rows
++
++
++# ---------------------------------------------------------------------------
++# insert_message
++# ---------------------------------------------------------------------------
++
++
++class TestInsertMessage:
++    @pytest.mark.asyncio
++    async def test_inserts_plain_message(self):
++        row = {
++            "id": "m-1",
++            "role": "user",
++            "content": "Hi there",
++            "recommendations": None,
++            "created_at": "2026-04-14T00:00:00Z",
++        }
++        client = _client_with_result([row])
++
++        result = await insert_message(client, CONV_ID, "user", "Hi there")
++
++        client.table.assert_called_with("messages")
++        client.table.return_value.insert.assert_called_with(
++            {"conversation_id": CONV_ID, "role": "user", "content": "Hi there"}
++        )
++        assert result == row
++
++    @pytest.mark.asyncio
++    async def test_inserts_message_with_recommendations(self):
++        recs = [{"title": "Inception", "year": "2010"}]
++        row = {
++            "id": "m-2",
++            "role": "assistant",
++            "content": "Try this:",
++            "recommendations": recs,
++            "created_at": "2026-04-14T00:00:00Z",
++        }
++        client = _client_with_result([row])
++
++        result = await insert_message(
++            client, CONV_ID, "assistant", "Try this:", recommendations=recs
++        )
++
++        client.table.return_value.insert.assert_called_with(
++            {
++                "conversation_id": CONV_ID,
++                "role": "assistant",
++                "content": "Try this:",
++                "recommendations": recs,
++            }
++        )
++        assert result == row
++
++    @pytest.mark.asyncio
++    async def test_omits_recommendations_key_when_none(self):
++        """Passing recommendations=None should not send a ``recommendations`` key,
++        so the DB default (NULL) applies cleanly."""
++        row = {
++            "id": "m-3",
++            "role": "assistant",
++            "content": "plain",
++            "recommendations": None,
++            "created_at": "2026-04-14T00:00:00Z",
++        }
++        client = _client_with_result([row])
++
++        await insert_message(client, CONV_ID, "assistant", "plain", recommendations=None)
++
++        payload = client.table.return_value.insert.call_args[0][0]
++        assert "recommendations" not in payload
+diff --git a/backend/tests/test_conversations_router.py b/backend/tests/test_conversations_router.py
+new file mode 100644
+index 0000000..30ed38d
+--- /dev/null
++++ b/backend/tests/test_conversations_router.py
+@@ -0,0 +1,300 @@
++"""Tests for the /api/conversations router."""
++
++from __future__ import annotations
++
++import time
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++from httpx import ASGITransport, AsyncClient
++from jose import jwt
++
++TEST_SECRET = "test-secret"
++TEST_USER_ID = "user-abc-123"
++CONV_ID = "conv-001"
++
++
++def _make_token(sub: str = TEST_USER_ID) -> str:
++    payload = {
++        "sub": sub,
++        "aud": "authenticated",
++        "exp": time.time() + 3600,
++    }
++    return jwt.encode(payload, TEST_SECRET, algorithm="HS256")
++
++
++class _FakeSettings:
++    SUPABASE_JWT_SECRET = TEST_SECRET
++    EMBEDDING_PROVIDER = "openai"
++    OPENAI_API_KEY = "test-key"
++    SUPABASE_URL = "https://fake.supabase.co"
++    SUPABASE_SERVICE_ROLE_KEY = "fake-service-role-key"
++    CORS_ORIGINS = "http://localhost:5173"
++
++    @property
++    def cors_origin_list(self) -> list[str]:
++        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
++
++
++def _fake_get_settings():
++    return _FakeSettings()
++
++
++@pytest.fixture
++def app():
++    from app.main import create_app
++
++    return create_app()
++
++
++@pytest.fixture
++async def client(app):
++    transport = ASGITransport(app=app)
++    async with AsyncClient(transport=transport, base_url="http://test") as ac:
++        yield ac
++
++
++# ---------------------------------------------------------------------------
++# GET /api/conversations
++# ---------------------------------------------------------------------------
++
++
++class TestListConversationsEndpoint:
++    @pytest.mark.asyncio
++    async def test_requires_auth(self, client):
++        resp = await client.get("/api/conversations")
++        assert resp.status_code in (401, 403)
++
++    @pytest.mark.asyncio
++    async def test_returns_user_conversations(self, client):
++        token = _make_token()
++        fake_rows = [
++            {"id": CONV_ID, "title": "Movies", "created_at": "2026-04-14T00:00:00Z", "updated_at": "2026-04-14T00:00:00Z"},
++        ]
++
++        with (
++            patch("app.auth.get_settings", _fake_get_settings),
++            patch(
++                "app.routers.conversations.get_supabase_client",
++                return_value=MagicMock(),
++            ),
++            patch(
++                "app.routers.conversations.list_conversations",
++                new_callable=AsyncMock,
++                return_value=fake_rows,
++            ) as mock_list,
++        ):
++            resp = await client.get(
++                "/api/conversations",
++                headers={"Authorization": f"Bearer {token}"},
++            )
++
++        assert resp.status_code == 200
++        body = resp.json()
++        assert body["data"] == fake_rows
++        # Verify the helper was called with the caller's user_id
++        args = mock_list.call_args
++        assert args[0][1] == TEST_USER_ID
++
++
++# ---------------------------------------------------------------------------
++# GET /api/conversations/{id}/messages
++# ---------------------------------------------------------------------------
++
++
++class TestGetMessagesEndpoint:
++    @pytest.mark.asyncio
++    async def test_returns_messages_when_owned(self, client):
++        token = _make_token()
++        fake_messages = [
++            {"id": "m1", "role": "user", "content": "Hi", "recommendations": None, "created_at": "2026-04-14T00:00:00Z"},
++        ]
++
++        with (
++            patch("app.auth.get_settings", _fake_get_settings),
++            patch(
++                "app.routers.conversations.get_supabase_client",
++                return_value=MagicMock(),
++            ),
++            patch(
++                "app.routers.conversations.get_conversation",
++                new_callable=AsyncMock,
++                return_value={"id": CONV_ID, "title": "Movies"},
++            ),
++            patch(
++                "app.routers.conversations.list_messages",
++                new_callable=AsyncMock,
++                return_value=fake_messages,
++            ),
++        ):
++            resp = await client.get(
++                f"/api/conversations/{CONV_ID}/messages",
++                headers={"Authorization": f"Bearer {token}"},
++            )
++
++        assert resp.status_code == 200
++        assert resp.json()["data"] == fake_messages
++
++    @pytest.mark.asyncio
++    async def test_404_when_not_owned(self, client):
++        token = _make_token()
++        with (
++            patch("app.auth.get_settings", _fake_get_settings),
++            patch(
++                "app.routers.conversations.get_supabase_client",
++                return_value=MagicMock(),
++            ),
++            patch(
++                "app.routers.conversations.get_conversation",
++                new_callable=AsyncMock,
++                return_value=None,
++            ),
++        ):
++            resp = await client.get(
++                f"/api/conversations/other-user-conv/messages",
++                headers={"Authorization": f"Bearer {token}"},
++            )
++        assert resp.status_code == 404
++
++
++# ---------------------------------------------------------------------------
++# PATCH /api/conversations/{id}
++# ---------------------------------------------------------------------------
++
++
++class TestRenameEndpoint:
++    @pytest.mark.asyncio
++    async def test_rename_success(self, client):
++        token = _make_token()
++        updated = {
++            "id": CONV_ID,
++            "title": "电影 2026 春",
++            "created_at": "2026-04-14T00:00:00Z",
++            "updated_at": "2026-04-14T00:00:00Z",
++        }
++
++        with (
++            patch("app.auth.get_settings", _fake_get_settings),
++            patch(
++                "app.routers.conversations.get_supabase_client",
++                return_value=MagicMock(),
++            ),
++            patch(
++                "app.routers.conversations.update_conversation_title",
++                new_callable=AsyncMock,
++                return_value=updated,
++            ) as mock_update,
++        ):
++            resp = await client.patch(
++                f"/api/conversations/{CONV_ID}",
++                headers={"Authorization": f"Bearer {token}"},
++                json={"title": "电影 2026 春"},
++            )
++
++        assert resp.status_code == 200
++        assert resp.json()["data"] == updated
++        # Verify user_id is passed through
++        args = mock_update.call_args
++        assert args[0][1] == TEST_USER_ID
++        assert args[0][2] == CONV_ID
++        assert args[0][3] == "电影 2026 春"
++
++    @pytest.mark.asyncio
++    async def test_rename_404_when_not_owned(self, client):
++        token = _make_token()
++        with (
++            patch("app.auth.get_settings", _fake_get_settings),
++            patch(
++                "app.routers.conversations.get_supabase_client",
++                return_value=MagicMock(),
++            ),
++            patch(
++                "app.routers.conversations.update_conversation_title",
++                new_callable=AsyncMock,
++                return_value=None,
++            ),
++        ):
++            resp = await client.patch(
++                "/api/conversations/other-conv",
++                headers={"Authorization": f"Bearer {token}"},
++                json={"title": "Stolen"},
++            )
++        assert resp.status_code == 404
++
++    @pytest.mark.asyncio
++    async def test_rename_rejects_empty_title(self, client):
++        token = _make_token()
++        with patch("app.auth.get_settings", _fake_get_settings):
++            resp = await client.patch(
++                f"/api/conversations/{CONV_ID}",
++                headers={"Authorization": f"Bearer {token}"},
++                json={"title": "   "},
++            )
++        assert resp.status_code == 400
++
++    @pytest.mark.asyncio
++    async def test_requires_auth(self, client):
++        resp = await client.patch(
++            f"/api/conversations/{CONV_ID}", json={"title": "x"}
++        )
++        assert resp.status_code in (401, 403)
++
++
++# ---------------------------------------------------------------------------
++# DELETE /api/conversations/{id}
++# ---------------------------------------------------------------------------
++
++
++class TestDeleteEndpoint:
++    @pytest.mark.asyncio
++    async def test_delete_success(self, client):
++        token = _make_token()
++
++        with (
++            patch("app.auth.get_settings", _fake_get_settings),
++            patch(
++                "app.routers.conversations.get_supabase_client",
++                return_value=MagicMock(),
++            ),
++            patch(
++                "app.routers.conversations.delete_conversation",
++                new_callable=AsyncMock,
++                return_value=True,
++            ) as mock_delete,
++        ):
++            resp = await client.delete(
++                f"/api/conversations/{CONV_ID}",
++                headers={"Authorization": f"Bearer {token}"},
++            )
++
++        assert resp.status_code == 200
++        assert resp.json()["data"] == {"deleted": True}
++        args = mock_delete.call_args
++        assert args[0][1] == TEST_USER_ID
++        assert args[0][2] == CONV_ID
++
++    @pytest.mark.asyncio
++    async def test_delete_404_when_not_owned(self, client):
++        token = _make_token()
++        with (
++            patch("app.auth.get_settings", _fake_get_settings),
++            patch(
++                "app.routers.conversations.get_supabase_client",
++                return_value=MagicMock(),
++            ),
++            patch(
++                "app.routers.conversations.delete_conversation",
++                new_callable=AsyncMock,
++                return_value=False,
++            ),
++        ):
++            resp = await client.delete(
++                "/api/conversations/nope",
++                headers={"Authorization": f"Bearer {token}"},
++            )
++        assert resp.status_code == 404
++
++    @pytest.mark.asyncio
++    async def test_requires_auth(self, client):
++        resp = await client.delete(f"/api/conversations/{CONV_ID}")
++        assert resp.status_code in (401, 403)
+diff --git a/backend/tests/test_llm_providers.py b/backend/tests/test_llm_providers.py
+index dd1d3c4..3224291 100644
+--- a/backend/tests/test_llm_providers.py
++++ b/backend/tests/test_llm_providers.py
+@@ -30,6 +30,7 @@ def _make_settings(**overrides: str) -> Settings:
+         "DEEPSEEK_API_KEY": "sk-test-deepseek",
+         "KIMI_API_KEY": "sk-test-kimi",
+         "MINIMAX_API_KEY": "sk-test-minimax",
++        "MINIMAX_GROUP_ID": "test-group-id",
+         "SUPABASE_URL": "https://fake.supabase.co",
+         "SUPABASE_SERVICE_ROLE_KEY": "fake",
+         "SUPABASE_JWT_SECRET": "fake",
+@@ -76,7 +77,7 @@ class TestFactoryCreatesCorrectProvider:
+     def test_minimax_embedding(self):
+         provider = create_embedding_provider("minimax", _make_settings())
+         assert isinstance(provider, MiniMaxEmbeddingProvider)
+-        assert provider.dimensions == 1024
++        assert provider.dimensions == 1536
+ 
+ 
+ # =====================================================================
+@@ -127,8 +128,8 @@ class TestProviderInstantiation:
+         assert provider.dimensions == 1536
+ 
+     def test_minimax_embedding_instantiation(self):
+-        provider = MiniMaxEmbeddingProvider(api_key="test-key")
+-        assert provider.dimensions == 1024
++        provider = MiniMaxEmbeddingProvider(api_key="test-key", group_id="test-group")
++        assert provider.dimensions == 1536
+ 
+     def test_deepseek_inherits_openai(self):
+         assert issubclass(DeepSeekChatProvider, OpenAIChatProvider)
+@@ -388,18 +389,25 @@ class TestEmbedding:
+ 
+     @pytest.mark.asyncio
+     async def test_minimax_embedding_dimensions(self):
+-        provider = MiniMaxEmbeddingProvider(api_key="test-key")
++        provider = MiniMaxEmbeddingProvider(
++            api_key="test-key", group_id="test-group"
++        )
+ 
+-        fake_vectors = [[0.5] * 1024]
+-        mock_data = [SimpleNamespace(embedding=v) for v in fake_vectors]
+-        mock_response = SimpleNamespace(data=mock_data)
++        fake_vectors = [[0.5] * 1536]
++        fake_response = MagicMock()
++        fake_response.raise_for_status = MagicMock()
++        fake_response.json = MagicMock(
++            return_value={"vectors": fake_vectors, "base_resp": {"status_code": 0}}
++        )
+ 
+-        provider._client.embeddings.create = AsyncMock(return_value=mock_response)
++        with patch("app.llm.embedding.httpx.AsyncClient") as mock_client_cls:
++            mock_client = mock_client_cls.return_value.__aenter__.return_value
++            mock_client.post = AsyncMock(return_value=fake_response)
+ 
+-        result = await provider.embed(["test"])
++            result = await provider.embed(["test"])
+ 
+         assert len(result) == 1
+-        assert len(result[0]) == 1024
++        assert len(result[0]) == 1536
+ 
+ 
+ # =====================================================================
+diff --git a/backend/tests/test_rag_service.py b/backend/tests/test_rag_service.py
+index 091b2f3..630ae16 100644
+--- a/backend/tests/test_rag_service.py
++++ b/backend/tests/test_rag_service.py
+@@ -224,7 +224,7 @@ class TestRetrieveContext:
+             )
+ 
+         # Embedding provider called with query
+-        embedding_provider.embed.assert_called_once_with(["推荐小说"])
++        embedding_provider.embed.assert_called_once_with(["推荐小说"], query=True)
+ 
+         # Similarity search called with correct args
+         mock_sim.assert_called_once_with(
+@@ -462,14 +462,18 @@ class TestChatEndpoint:
+     @pytest.mark.asyncio
+     async def test_stream_returns_event_stream(self, client):
+         token = _make_token()
+-        chunks = [
+-            {"content": "你好", "done": False},
+-            {"content": "", "done": True},
++        events = [
++            {"type": "conversation", "id": "new-conv-1"},
++            {"type": "content", "content": "你好", "done": False},
++            {"type": "content", "content": "", "done": True},
+         ]
+ 
+-        async def _fake_stream_iter():
+-            for chunk in chunks:
+-                yield chunk
++        def _fake_persistent(*args, **kwargs):
++            async def _gen():
++                for event in events:
++                    yield event
++
++            return _gen()
+ 
+         with (
+             patch("app.auth.get_settings", _fake_get_settings),
+@@ -487,9 +491,8 @@ class TestChatEndpoint:
+                 return_value=MagicMock(),
+             ),
+             patch(
+-                "app.routers.chat.chat_with_rag",
+-                new_callable=AsyncMock,
+-                return_value=_fake_stream_iter(),
++                "app.routers.chat.chat_with_rag_persistent",
++                side_effect=_fake_persistent,
+             ),
+         ):
+             resp = await client.post(
+@@ -504,13 +507,16 @@ class TestChatEndpoint:
+         # Parse SSE events from body
+         body = resp.text
+         lines = [l for l in body.strip().split("\n") if l.startswith("data: ")]
+-        assert len(lines) == 2
++        assert len(lines) == 3
+ 
+         first = json.loads(lines[0].removeprefix("data: "))
+-        assert first["content"] == "你好"
+-        assert first["done"] is False
++        assert first == {"type": "conversation", "id": "new-conv-1"}
++
++        second = json.loads(lines[1].removeprefix("data: "))
++        assert second["type"] == "content"
++        assert second["content"] == "你好"
+ 
+-        last = json.loads(lines[1].removeprefix("data: "))
++        last = json.loads(lines[2].removeprefix("data: "))
+         assert last["done"] is True
+ 
+     @pytest.mark.asyncio
+diff --git a/backend/tests/test_search_service.py b/backend/tests/test_search_service.py
+index 9bdac92..e996c34 100644
+--- a/backend/tests/test_search_service.py
++++ b/backend/tests/test_search_service.py
+@@ -175,7 +175,7 @@ class TestExecuteSearchCollection:
+         assert results[0]["title"] == "The Great Gatsby"
+         assert results[0]["similarity"] == 0.95
+         assert results[1]["title"] == "Inception"
+-        embedding_provider.embed.assert_called_once_with(["gatsby"])
++        embedding_provider.embed.assert_called_once_with(["gatsby"], query=True)
+ 
+     @pytest.mark.asyncio
+     async def test_category_filter(self):
+@@ -794,34 +794,38 @@ class TestSearchEndpoint:
+         """Streaming search should return text/event-stream."""
+         token = _make_token()
+ 
+-        async def _fake_stream():
+-            yield {"content": "Hello", "done": False}
+-            yield {"content": " world", "done": True}
++        events = [
++            {"type": "conversation", "id": "conv-new"},
++            {"type": "recommendations", "items": [{"title": "X"}]},
++            {"type": "content", "content": "Hello", "done": False},
++            {"type": "content", "content": " world", "done": True},
++        ]
+ 
+-        mock_chat = MagicMock()
+-        mock_chat.chat = AsyncMock(
+-            side_effect=[
+-                {"content": "Searching...", "tool_calls": None},
+-                _fake_stream(),
+-            ]
+-        )
+-        mock_chat.model_name = "test-model"
+-        mock_embed = _mock_embedding_provider()
++        def _fake_persistent(*args, **kwargs):
++            async def _gen():
++                for event in events:
++                    yield event
++
++            return _gen()
+ 
+         with (
+             patch("app.auth.get_settings", _fake_get_settings),
+             patch("app.routers.search.get_settings", _fake_get_settings),
+             patch(
+                 "app.routers.search.create_chat_provider",
+-                return_value=mock_chat,
++                return_value=MagicMock(),
+             ),
+             patch(
+                 "app.routers.search.create_embedding_provider",
+-                return_value=mock_embed,
++                return_value=MagicMock(),
+             ),
+             patch(
+                 "app.routers.search.get_supabase_client",
+-                return_value=_mock_db_client(),
++                return_value=MagicMock(),
++            ),
++            patch(
++                "app.routers.search.search_with_tools_persistent",
++                side_effect=_fake_persistent,
+             ),
+         ):
+             resp = await client.post(
+@@ -839,8 +843,6 @@ class TestSearchEndpoint:
+             for line in text.strip().split("\n")
+             if line.startswith("data: ")
+         ]
+-        assert len(data_lines) >= 1
+-        # Check that content chunks are present
+-        for line in data_lines:
+-            parsed = json.loads(line)
+-            assert "type" in parsed
++        assert len(data_lines) == 4
++        types = [json.loads(line)["type"] for line in data_lines]
++        assert types == ["conversation", "recommendations", "content", "content"]
+diff --git a/docs/acceptance-tests/2026-04-13-001-feat-ai-chat-multi-conversation-acceptance.md b/docs/acceptance-tests/2026-04-13-001-feat-ai-chat-multi-conversation-acceptance.md
+new file mode 100644
+index 0000000..f05979a
+--- /dev/null
++++ b/docs/acceptance-tests/2026-04-13-001-feat-ai-chat-multi-conversation-acceptance.md
+@@ -0,0 +1,204 @@
++---
++title: "Acceptance: feat: AI Chat 多会话持久化"
++type: acceptance
++status: pending
++date: 2026-04-13
++plan: docs/plans/2026-04-13-001-feat-ai-chat-multi-conversation-plan.md
++---
++
++# 功能验收清单 — AI Chat 多会话持久化
++
++对应 Plan: [2026-04-13-001-feat-ai-chat-multi-conversation-plan.md](../plans/2026-04-13-001-feat-ai-chat-multi-conversation-plan.md)
++
++对应 Brainstorm: [2026-04-13-ai-chat-multi-conversation-requirements.md](../brainstorms/2026-04-13-ai-chat-multi-conversation-requirements.md)
++
++## 环境准备
++
++### 0.1 数据库迁移
++```bash
++# 方式 A：Supabase CLI
++supabase db push
++
++# 方式 B：Supabase Dashboard → SQL Editor
++# 粘贴执行 supabase/migrations/005_add_ai_conversations.sql 内容
++```
++
++验证：Supabase Table Editor 能看到 `conversations` / `messages` 两张新表，RLS 均已开启。
++
++### 0.2 后端启动
++```bash
++cd backend && source .venv/bin/activate
++uvicorn app.main:app --reload --port 8000
++```
++
++### 0.3 前端启动
++```bash
++npm run dev
++```
++
++### 0.4 获取 JWT（用于 curl 验收）
++浏览器 DevTools Console：
++```js
++(await supabase.auth.getSession()).data.session.access_token
++```
++
++---
++
++## 验收用例
++
++### Phase 1：DB + 后端
++
++- [x] **V1. 迁移可执行** — `supabase/migrations/005_add_ai_conversations.sql` 顺利执行，无报错；重跑幂等（或与现有 migration 风格一致）。
++
++- [ ] **V2. RLS 四件套齐全** — Supabase Dashboard → Authentication → Policies 下，`conversations` 和 `messages` 各有 4 条 policy（select/insert/update/delete），`TO authenticated`。
++
++- [ ] **V3. 触发器 bump updated_at** — 直接 SQL 插入一条 message，对应 `conversations.updated_at` 被更新：
++  ```sql
++  INSERT INTO conversations (user_id, title) VALUES ('<uid>', 'test') RETURNING id;
++  -- 记住 id
++  SELECT updated_at FROM conversations WHERE id='<id>';
++  INSERT INTO messages (conversation_id, role, content) VALUES ('<id>', 'user', 'hi');
++  SELECT updated_at FROM conversations WHERE id='<id>';  -- 应更新
++  ```
++
++- [ ] **V4. 后端 DB 层测试** — `cd backend && .venv/bin/python -m pytest tests/test_conversations_db.py -v` 全绿。涵盖：
++  - `list/create/update/delete_conversation` 都做 `user_id` 过滤
++  - `insert_message` 正确存 `recommendations` jsonb
++  - `delete_conversation` 触发 CASCADE 清理 messages（集成 mock 断言）
++
++- [ ] **V5. 后端 Router 测试** — `pytest tests/test_conversations_router.py -v` 全绿：
++  - 未登录 GET `/api/conversations` → 401/403
++  - 登录 GET → 200 返回当前用户对话
++  - PATCH 他人对话 → 404（不泄露存在性）
++  - DELETE 不存在 → 404
++
++- [ ] **V6. RAG/Search 服务测试** — `pytest tests/test_rag_service.py tests/test_search_service.py -v` 全绿。新增 case：
++  - `conversation_id=None` → 不查不写 DB（旧路径）
++  - `conversation_id=None` + 首条消息 → 懒创建，title 取前 20 字
++  - 历史消息正确加入 LLM messages 数组
++  - SSE 事件顺序：`conversation`（若新建）→ `recommendations`（search only）→ `content × N` → `done`
++  - 流完 INSERT assistant message，recommendations 字段非空（search case）
++
++- [ ] **V7. curl 手动验证 conversations API** —
++  ```bash
++  # 列表
++  curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/conversations
++  # 重命名
++  curl -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
++    -d '{"title":"重命名测试"}' http://localhost:8000/api/conversations/<id>
++  # 删除
++  curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/conversations/<id>
++  ```
++
++- [ ] **V8. curl 手动验证 chat 懒创建** —
++  ```bash
++  curl -N -X POST http://localhost:8000/api/ai/chat \
++    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
++    -d '{"message":"你好","conversation_id":null}'
++  ```
++  首个 SSE 事件应为 `data: {"type":"conversation","id":"..."}`；Supabase 能看到新对话 + 两条 message（user + assistant）。
++
++### Phase 2：前端 DataLayer 与 Hook
++
++- [ ] **V9. TypeScript 编译** — `npx tsc --noEmit` 无新增错误；`src/types.ts` 有 `Conversation` 类型；`ChatMessage` 扩展为含 `id?` / `recommendations?`。
++
++- [ ] **V10. DataLayer Supabase 实现** — 登录用户 A，浏览器 Console 调 `dataLayer.listConversations()`，只返回 A 的对话（RLS 隔离验证）。
++
++- [ ] **V11. DataLayer LocalStorage 抛错** — 未登录态下调用上述方法 → 抛出 "AI chat 需要登录"（或等价信息）。
++
++- [ ] **V12. useConversations 挂载行为** —
++  - 初次登录（库中无对话）→ activeId = null，显示欢迎态
++  - 刷新（库中 ≥1 对话）→ 自动选中 updated_at 最新的那条，messages 从后端加载完整
++
++### Phase 3：端到端 UI
++
++#### R1：持久化
++
++- [ ] **V13. 关闭面板再打开** — 发 2-3 条消息 → 点 × 关闭面板 → 侧栏 AI 按钮重开 → 上次对话 + 全部消息原样出现。
++
++- [ ] **V14. 硬刷新（F5）** — 在对话中按 F5 → 页面重新加载 → AI 面板重开后仍在同一对话、历史消息完整。
++
++- [ ] **V15. 退出浏览器** — 关闭所有窗口 → 重新打开 → 登录态 → 打开 AI 面板 → 对话仍在。
++
++#### R2：默认恢复最近活跃
++
++- [ ] **V16. 最近活跃优先** — 建立 3 条对话 A/B/C，最后一次在 B 里发消息 → 重开面板 → 自动进入 B（而非 A 或 C）。
++
++- [ ] **V17. 空态兜底** — 数据库中全部对话删除后重开面板 → 显示欢迎页（含 quick action 按钮）。
++
++#### R3 + R4：标题栏下拉 + 切换 / 重命名 / 删除
++
++- [ ] **V18. 下拉列表展开** — 点击标题（非 × 按钮）→ 下拉出现；列表按 updated_at DESC 排序；每行展示 title + 相对时间（如「2 分钟前」）。
++
++- [ ] **V19. 切换对话** — 下拉内点另一条 → 主消息区切到该对话、其他对话不受影响、标题栏显示新 title；下拉自动收起。
++
++- [ ] **V20. 行内重命名** — 下拉中某行点「编辑」图标 → title 变输入框 → 输入「电影 2026 春」→ Enter 提交 → UI 立即更新 → 刷新页面 → 下拉里仍是「电影 2026 春」。
++
++- [ ] **V21. 重命名取消** — 编辑中按 Esc → 还原为原标题，不触发 PATCH。
++
++- [ ] **V22. 删除 + 二次确认** — 点某行「删除」→ 出现 `confirm` 对话框 → 取消 → 不删；再次点删除 → 确认 → 对话从下拉消失，后端 `conversations` 表对应行不存在（CASCADE 清理 messages）。
++
++- [ ] **V23. 删除当前对话自动切换** — 删除正在查看的那条 → 下拉消失该条 → 主消息区自动切到剩余最近活跃对话；若删完最后一条 → 切回欢迎态。
++
++#### R5 + R6：懒创建 + 首条消息作标题
++
++- [ ] **V24. 「新建会话」纯本地** — 下拉内点「+ 新建会话」→ 消息区清空进入空态；此刻 Supabase `conversations` 表行数不变。
++
++- [ ] **V25. 首条消息触发落库** — 在新建后空态下发送「推荐一部科幻电影」→ 后端懒创建行 → 下拉新增一条，title = 「推荐一部科幻电影」（前 20 字）。
++
++- [ ] **V26. 长标题截断** — 发送一条 50+ 字的用户消息 → 对话 title 恰好前 20 字。
++
++- [ ] **V27. Quick action 作标题** — 空态直接点「分析我的口味」→ 新对话 title = 「分析一下我的品味偏好」（quick action 预置文案前 20 字，无特殊路径）。
++
++#### R7：推荐卡片持久化
++
++- [ ] **V28. 推荐随消息保存** — 发「推荐一部悬疑电影」→ 看到推荐卡片 → 关面板 → 重开该对话 → 卡片仍在，展示位置绑定到那条 assistant 消息（不是面板级单例）。
++
++- [ ] **V29. 「+ 收藏」可用** — 重开的对话中，旧推荐卡片的「+ 收藏」按钮点击 → 正常唤起 AddEditModal 并填充 title / description。
++
++- [ ] **V30. 多条推荐消息并存** — 同一对话中连发两次推荐请求 → 各自的 assistant 消息挂各自的推荐卡片，互不覆盖（不再有 `setRecommendations([])` 清空 bug）。
++
++#### R8：按时间加载历史
++
++- [ ] **V31. 消息时序正确** — 重开老对话 → 消息按时间升序（最早在顶部），user/assistant 交替符合发生顺序。
++
++- [ ] **V32. 多轮连续性** — 对老对话追问「上一条里提到的 X 详细说说」→ LLM 回答体现记得上文（说明后端把历史回灌到 LLM messages）。
++
++### Phase 4：边界与降级
++
++- [ ] **V33. 流式中途关面板** — 发消息过程中（正在流）点 × → 再打开面板 → 已经产生的 assistant 内容应在对话里（若后端完成了 INSERT）；若中断导致 assistant 缺失，最多只见 user 消息（不崩溃、不重复）。
++
++- [ ] **V34. 网络中断** — 发消息后断网 → UI 显示错误，user message 仍保留在视觉上；重连后刷新 → 若后端已入库则 user message 持久，若未完成则列表里无此对话或无此消息（与后端实际状态一致）。
++
++- [ ] **V35. 未登录态** — 退出登录后点侧栏 AI → 欢迎态 + 登录提示；或下拉按钮禁用（行为需前端团队一锤定音，但不应崩溃）。
++
++- [ ] **V36. 跨用户隔离** — 用户 A 建 1 条对话 → 用户 B 登录 → 下拉列表不含 A 的对话；用户 B 直接访问 A 的 `conversation_id` URL（如有）→ 404。
++
++- [ ] **V37. 同账号多标签同步一致性（非 MVP，仅记录现象）** — 标签 1 建对话 → 标签 2 的下拉需手动刷新才能看到（已声明不做实时订阅，属预期行为）。
++
++---
++
++## 与 Plan Success Criteria 的对应关系
++
++| Plan 中的验收判据 | 验收用例 |
++|---|---|
++| 发几条消息 → 关面板 → 重开 → 对话与消息原样出现 | V13, V14, V15 |
++| 硬刷新 → 对话仍在 | V14 |
++| 新建 3 条对话 → 下拉列出 3 条 → 点击切换 | V18, V19 |
++| 推荐卡片关面板重开仍在，「+ 收藏」可用 | V28, V29 |
++| 重命名刷新后保持 | V20 |
++| 删除 → 下拉移除；若删当前则切换 | V22, V23 |
++| 最近活跃自动恢复 | V16 |
++| 懒创建 + 首条消息作标题 | V24, V25, V26 |
++| 多轮连续性 | V32 |
++
++## 常见坑位
++
++- **Service-role key 越权**：后端新 DB 函数忘写 `.eq('user_id', user_id)` → 不同用户能读彼此对话。V4 的测试必须显式断言每个函数都做了这个过滤。
++- **SSE 事件顺序**：`{type: "conversation"}` 必须先于 `{type: "recommendations"}` 和 `{type: "content"}`，否则前端还没 setActiveId 就开始 append message，导致 message 落不到任何对话。V6 / V8 重点看事件顺序。
++- **消息 vs 面板级 recommendations**：改造前 `recommendations` 是 `AIChatPanel` 级单例，重构后必须绑定到 assistant message；V30 专查这个历史 bug。
++- **updated_at 触发器**：如果忘记写 `messages INSERT → bump conversations.updated_at`，下拉排序永远不变（最近活跃失效）。V3 + V16 联合验证。
++- **quick action 路径**：brainstorm 里明确 quick action = user message，不走特殊逻辑；V27 防止实现时"聪明地"过滤掉 quick action 导致新对话无标题。
++- **history 回灌**：RAG 当前实现把最后一条 user 消息用 RAG context 增强；多轮时要用 history `[:-1]` + context-augmented user，不能直接 `[...history, user_with_context]` 导致 user 被重复。V6 + V32 覆盖。
++- **删除当前对话**：`DELETE` 成功后前端 state 若不主动切到 conversations[0]，活跃态会悬空指向已删 id，后续拉消息 404。V23 专查。
++- **Vite Fast Refresh**：新增 `useConversations` hook 若和 component 放同一文件 → 又会触发 page reload。hook 必须独立文件（`src/hooks/useConversations.ts`），与本次修复 `useAuth` 的经验一致。
+diff --git a/docs/brainstorms/2026-04-13-ai-chat-multi-conversation-requirements.md b/docs/brainstorms/2026-04-13-ai-chat-multi-conversation-requirements.md
+new file mode 100644
+index 0000000..8f43918
+--- /dev/null
++++ b/docs/brainstorms/2026-04-13-ai-chat-multi-conversation-requirements.md
+@@ -0,0 +1,80 @@
++---
++date: 2026-04-13
++topic: ai-chat-multi-conversation
++---
++
++# AI Chat 多会话持久化
++
++## Problem Frame
++
++Liker 的 AI 对话当前只存在于 `AIChatPanel` 的本地 state 里。关闭面板 / 页面刷新 / 浏览器重启，全部聊天记录连同推荐卡片一起消失。用户无法：
++- 关闭面板后回看刚才的品味分析结果
++- 隔天继续一条未完成的对话
++- 把不同话题（品味分析 / 电影推荐 / 读书聊）分开维护
++
++这是一个个人品味工具，AI 生成的内容（分析、推荐、观点）本身就是值得留存的资产。需要把对话从"临时 UI state"升级为"用户数据的一部分"。
++
++## Requirements
++
++- **R1**. 对话记录按用户持久化到 Supabase，关闭面板、页面刷新、退出浏览器后依然可见
++- **R2**. 默认行为：打开 AI 面板时自动恢复用户「最近活跃」的那条对话；若用户从未有对话或全部已删除 → 显示欢迎页（等同现在的空态）
++- **R3**. 标题栏显示当前对话标题；点击标题 → 展开下拉，列出该用户的全部对话（标题 + 最后更新时间）
++- **R4**. 下拉列表中每条对话支持：点击切换 / 行内重命名 / 删除（带二次确认弹窗）
++- **R5**. 「新建会话」按钮：清空面板、进入空态；新对话在用户发送第一条消息时才正式落库（懒创建）
++- **R6**. 新对话标题默认为用户首条消息前 20 字；用户可随时手动重命名
++- **R7**. Assistant 消息附带的推荐卡片（search_external 返回的电影/书/音乐）随消息一起持久化；重新打开旧对话时卡片完整渲染，「+ 收藏」按钮依然可用
++- **R8**. 打开一条对话时按时间顺序加载并显示全部历史消息
++
++## Success Criteria
++
++- 发几条消息 → 关闭 AI 面板 → 重新打开 → 上次那条对话和全部消息原样出现
++- 硬刷新浏览器（F5）→ 上次的对话仍然在
++- 新建 3 条对话聊不同话题 → 下拉列表列出 3 条；点击切换后消息区切到对应对话，其他对话不受影响
++- 对 AI 说「推荐一部悬疑电影」→ 看到推荐卡片 → 关面板 → 重新打开该对话 → 卡片还在，点「+ 收藏」能正常填入 AddEditModal
++- 重命名一条对话「电影 2026 春」→ 刷新页面 → 下拉里仍是「电影 2026 春」
++- 删除一条对话 → 确认 → 下拉列表立即移除；若被删的正是当前会话，自动切换到最近活跃的另一条（或空态）
++
++## Scope Boundaries (非目标)
++
++- 不做跨设备实时同步（打开时拉取一次，不订阅实时变更）
++- 不做对话内搜索
++- 不做置顶、归档、文件夹分组
++- 不做消息级编辑 / 重新生成 / 删除单条
++- 不做对话分享 / 导出
++- 不做软删除 / 回收站
++- 不做每个对话独立的 system prompt
++- 不做上下文窗口管理优化（对话变长后全量发给 LLM，MVP 暂不裁剪；超长对话是后续独立话题）
++
++## Key Decisions
++
++- **多会话结构 over 单会话持久化**：用户明确要"按不同会话分开保存"，分主题管理比单条 localStorage 更符合实际使用模式
++- **首条消息前 20 字做标题，不调 LLM 生成**：MiniMax 个人版 RPM 有限；额外的 LLM 调用成本没带来等比收益；首条消息已经足够代表对话主题；用户可重命名兜底精度问题
++- **标题栏下拉 over 左侧 sidebar**：当前面板 420px 固定宽度，内嵌 sidebar 空间逼仄；下拉切换保持原布局、视觉噪音最小，代价是切换多一次点击（对低频操作可接受）
++- **懒创建（R5）**：点「新建会话」不立即写库，第一条消息发出时才 INSERT，避免数据库里堆满空对话行
++- **硬删除带二次确认**：个人工具、软删除过度工程；弹窗确认覆盖误操作风险
++- **推荐卡片随消息持久化**：推荐本身是对话的高价值产出，重开对话看不到推荐 = 丢失上下文
++
++## Dependencies / Assumptions
++
++- Supabase RLS policies 按现有 items/profiles 模式延展（每条对话 `user_id` 字段 + 四条 CRUD policy）
++- 假设单设备使用；多设备场景下「同时在两个设备编辑同一对话」的一致性问题延后处理
++- 现有 `AIChatPanel` 组件主体保留；state 所有权会上移（具体形式在 plan 阶段定）
++
++## Outstanding Questions
++
++### Resolve Before Planning
++
++（无 — 产品决策已全部收敛）
++
++### Deferred to Planning
++
++- [Affects R1][Technical] 流式输出过程中的持久化节奏：一条助手消息流完整了再写库，还是流一段存一段？前者实现简单，断网/崩溃时会丢；后者复杂但更健壮
++- [Affects R2][Technical] 「最近活跃」怎么定义：对话的 `updated_at`（每条消息发送时 bump）vs 单独的 `last_opened_at`（用户切到这条时 bump）？两者在「看了但没回」的场景下语义不同
++- [Affects R4][UX] 重命名交互：下拉行内点击标题即变输入框，还是弹出小 Modal？
++- [Affects R7][Schema] 推荐卡片的存储方式：独立 `recommendations` 表（message_id 外键）vs 直接作为 assistant message 的 JSON 字段？前者规范、后者读写更快
++- [Affects R8][Needs research] 多轮对话连续性：当前 `chat_with_rag`（backend/app/services/rag.py）只接收单条 user message（lines 82-97），不传历史。多轮要把历史消息一起塞到 messages 数组里。需要 planning 阶段确认并改造
++- [Affects R6][Edge case] 用户发第一条消息前就点了「新建会话」里的 quick action（如「分析我的口味」）→ 这条系统预置文案要不要用来做标题？还是仍用用户真实首条？
++
++## Next Steps
++
++→ `/ce:plan` for structured implementation planning
+diff --git a/docs/plans/2026-04-13-001-feat-ai-chat-multi-conversation-plan.md b/docs/plans/2026-04-13-001-feat-ai-chat-multi-conversation-plan.md
+new file mode 100644
+index 0000000..65b41aa
+--- /dev/null
++++ b/docs/plans/2026-04-13-001-feat-ai-chat-multi-conversation-plan.md
+@@ -0,0 +1,538 @@
++---
++title: feat: AI Chat 多会话持久化
++type: feat
++status: completed
++date: 2026-04-13
++origin: docs/brainstorms/2026-04-13-ai-chat-multi-conversation-requirements.md
++---
++
++# feat: AI Chat 多会话持久化
++
++## Overview
++
++把 AI 对话从 `AIChatPanel` 的本地 React state 升级为 Supabase 持久化资源。新增 `conversations` + `messages` 两张表；后端 `/api/ai/chat` 和 `/api/ai/search` 接受 `conversation_id` 并负责写库；前端通过新的 `useConversations` hook 聚合状态，`AIChatPanel` 在标题栏下拉切换、行内重命名、二次确认删除。关闭面板 / 刷新页面 / 退出浏览器后，对话完整保留。
++
++## Problem Frame
++
++当前 `AIChatPanel.tsx` 把 `messages` / `recommendations` 都存在组件本地 `useState` 里（lines 12, 16）。关闭面板 → 组件卸载 → state 销毁；硬刷新 → 同样丢失。推荐卡片甚至是「面板级单例」，发送下一条消息会被 `setRecommendations([])` 清空（line 33），无法与对应的助手消息绑定。用户因此无法回看过往分析、不能按话题分组管理、也不能跨设备继续对话。
++
++(see origin: `docs/brainstorms/2026-04-13-ai-chat-multi-conversation-requirements.md`)
++
++## Requirements Trace
++
++- **R1**. 对话持久化，跨关闭/刷新/重启保留
++- **R2**. 打开面板默认恢复最近活跃会话，无则欢迎页
++- **R3**. 标题栏点击 → 下拉列出全部会话（标题 + 最后更新时间）
++- **R4**. 下拉内支持切换 / 行内重命名 / 删除（带二次确认）
++- **R5**. 「新建会话」清空面板进入空态，懒创建（首条消息发出时落库）
++- **R6**. 标题默认 = 用户首条消息前 20 字，可手动重命名
++- **R7**. 推荐卡片与对应助手消息一起持久化，重开对话完整渲染
++- **R8**. 打开对话按时间顺序加载全部历史
++
++## Scope Boundaries
++
++- 不做跨设备实时同步（打开时拉一次，无实时订阅）
++- 不做对话内搜索、置顶、归档、分组
++- 不做消息级编辑 / 重新生成 / 删除单条
++- 不做对话分享 / 导出
++- 不做软删除 / 回收站
++- 不做每对话独立 system prompt
++- 不做上下文窗口裁剪（超长对话全量塞 LLM，后续议题）
++- 不做 `LocalStorageDataLayer` 的对话持久化实现（AI 功能本就要求登录）
++
++## Context & Research
++
++### Relevant Code and Patterns
++
++**Schema conventions** (参照 `supabase/migrations/001_initial_schema.sql`, `003_add_review_and_embeddings.sql`):
++- PK：`uuid PRIMARY KEY DEFAULT gen_random_uuid()`
++- FK：`REFERENCES public.profiles(id) ON DELETE CASCADE`
++- 时间戳：`timestamptz DEFAULT now()`，`updated_at` 用现有共享触发器 `public.update_updated_at()` bump
++- RLS 命名：`users_{action}_own_{resource}`，TO authenticated，`(SELECT auth.uid()) = user_id`
++- 索引：每 FK 一个 `idx_{table}_{column}`；时序表（如 `logbook_entries`）额外用 `created_at DESC` —— 是 `conversations(updated_at DESC)` 的模板
++
++**Frontend DataLayer** (`src/data/index.ts`, `src/data/supabase.ts`, `src/data/localStorage.ts`):
++- `createDataLayer(session)` 返回 `SupabaseDataLayer`（有登录）或 `LocalStorageDataLayer`（无）
++- Supabase 实现每个方法走 `this.supabase.from('<table>').<op>(...).eq('user_id', this.user.id)`
++- 行↔域对象手写映射（`toItem` / `toRow`，snake_case ↔ camelCase）
++
++**Backend AI 路由** (`backend/app/routers/chat.py`, `search.py`):
++- 统一前缀 `/api/ai`，`Depends(get_current_user_id)` 拿 `user_id`
++- SSE 流格式：`data: {json}\n\n`，`chat` 发 `{content, done}`，`search` 多一个 `{type: "recommendations", items}` 起手 + `{type: "content", content, done}` 后续
++- `ResponseEnvelope` 只包非流式响应
++- `chat_with_rag`（`services/rag.py:74-96`）当前签名不含 `conversation_id` 或 history，`messages` 硬编码 `[system, user]`
++- `search_with_tools`（`services/search.py:161-224`）做两次 LLM 调用（tool 选择 + 结果合成），多轮历史必须塞进第一次调用
++
++**Backend DB 客户端** (`backend/app/db/supabase_client.py`):
++- 用 **service-role key** → **绕过 RLS**
++- 任何新的后端写入必须手动过滤 `user_id`，否则权限漏洞
++
++**前端类型** (`src/services/ai.ts`):
++- 已导出 `ChatMessage { role, content }` 和 `RecommendationItem`
++- `src/types.ts` 当前没有 chat 相关类型
++- 推荐卡片在面板层（`AIChatPanel.tsx:16`），不挂消息
++
++**测试骨架** (`backend/tests/test_rag_service.py`, `test_search_service.py`, `test_auth.py`):
++- `pytest` + `pytest-asyncio` + `httpx.AsyncClient(ASGITransport)`
++- `_make_token()` HS256 本地签名；`_mock_chat_provider` / `_mock_db_client` 工厂
++- 流式 endpoint 测试通过解析 `resp.text` 中 `data: ` 行断言
++- 前端无测试基础设施，靠 `docs/acceptance-tests/` 人工验收
++
++### Institutional Learnings
++
++`docs/solutions/` 尚未建立，无历史沉淀可引用。本次实现完成后建议通过 `/ce:compound` 初始化。
++
++需独立规避的典型坑（非 learnings，但研究阶段识别到）：
++- **SSE 中断场景**：客户端中途断开 / 面板关闭时，后端正在流的 response 需决定是继续流完写库还是丢弃
++- **service-role 越权风险**：后端写新表必须显式 WHERE `user_id = :current_user`
++- **types.ts 漂移**：CLAUDE.md 约束「UI 改动不得导致 types.ts 大幅变化」——新类型只加 3 个（Conversation、ChatMessage 规范化、Recommendation），不改已有
++
++### External References
++
++未启动外部调研：技术栈（Supabase + FastAPI + React）在仓库里有密集且一致的本地模式，照抄即可；产品决策已在 brainstorm 收敛。
++
++## Key Technical Decisions
++
++- **后端集中管理持久化 over 前端自写**：`search_with_tools` 的推荐卡片只有后端知道；多轮 history 本来就需要后端加载给 LLM；后端同时写双方消息确保「user + assistant + recommendations」原子一致。前端不直接写 `messages` 表
++- **用户消息 eager 写、助手消息 lazy 写**：进入 handler 立刻写 user message，流完再写 assistant message。流失败时用户消息仍在库里，体验上「我的问题没丢」
++- **JSONB 列存推荐卡片 over 独立表**：个人工具数据量小，重读整段对话一次 SELECT 解决；推荐卡片结构稳定（`RecommendationItem` 已定义）；没有跨消息查询推荐的需求
++- **`conversations.updated_at` 作为「最近活跃」判据**：`messages` INSERT 触发器 bump 上游 `conversations.updated_at`，无需单独 `last_opened_at` 列。切到对话但不发言不会影响排序——这是 MVP 可接受的语义
++- **懒创建 conversation**：点「新建会话」只更新前端 `activeId = null`；首条消息 POST 进后端时，若 `conversation_id` 为空则后端创建行并把 id 回传（流前置事件）
++- **`useConversations` 自定义 hook over Context/Zustand**：状态边界（会话列表 + 活跃会话 + 消息 + 流）与一个面板强绑定，自定义 hook 粒度最合适；保持 `useAuth` 的风格；Context 仅在跨组件共享时必要
++- **标题生成 = 首条 user message 前 20 字**：零成本、避开 MiniMax RPM 限制；Quick action（"分析一下我的品味偏好"）同样作为 user message 参与（无特殊路径）；用户可手动重命名兜底
++- **硬删除 + 二次确认**：个人工具不做软删除/回收站。确认对话框用原生 `confirm()` 或轻量自定义 Modal（沿用现有 Modal 模式）
++- **DataLayer 只在 Supabase 侧实现 conversations**：`LocalStorageDataLayer` 对应方法抛错 `'AI chat requires sign-in'`；现有 `AIChatPanel.tsx:26-29` 已有未登录提示，行为一致
++- **`AIChatPanel` 改造 over 新组件**：保留文件名和大部分布局，refactor 内部；外部调用点（`App.tsx`）接口不变
++
++## Open Questions
++
++### Resolved During Planning
++
++- **持久化节奏（origin R1 deferred）**：用户消息 eager 写、助手消息完成后批写。流中断 → 助手消息不落库；用户消息已在库里可见
++- **最近活跃定义（R2 deferred）**：用 `conversations.updated_at`，由 `messages` insert 触发器 bump
++- **重命名交互（R4 deferred）**：下拉行内点编辑按钮 → title 变可编辑输入框 → Enter/blur 提交；Esc 取消
++- **推荐卡片存储（R7 deferred）**：`messages.recommendations jsonb` 列，随消息一起读写
++- **多轮对话连续性（R8 deferred）**：后端接 `conversation_id` → `services/rag.py` / `services/search.py` 查历史 messages → 与新 user message 一起构造 `messages: [system, ...history, user]` 传给 LLM；search 的 tool-selection 调用同样带上历史
++- **首条消息是 quick action 的情况（R6 deferred）**：quick action 走 `handleSend(query)`，本质上就是一条 user message；直接取该条前 20 字做标题，无特殊逻辑
++
++### Deferred to Implementation
++
++- **流中途组件卸载的处理**：`AsyncGenerator` 通过 `AbortController` 传递取消信号；后端可通过 `request.is_disconnected()` 检测，决定是否放弃写库。实现时需测试一次看行为
++- **`confirm()` vs 自定义 Modal**：先原生 `confirm()`，如风格格格不入再换轻量 Modal（观察现有 Modal 是否可复用）
++- **Supabase 前端 SDK 实时订阅**：非目标，但如果后期要加，`conversations` 表 realtime 开关的启用点。此次不开启
++
++## High-Level Technical Design
++
++> *This illustrates the intended approach and is directional guidance for review, not implementation specification. The implementing agent should treat it as context, not code to reproduce.*
++
++### 数据模型（ERD）
++
++```mermaid
++erDiagram
++    profiles ||--o{ conversations : "owns"
++    conversations ||--o{ messages : "contains"
++
++    profiles {
++        uuid id PK
++    }
++    conversations {
++        uuid id PK
++        uuid user_id FK
++        text title
++        timestamptz created_at
++        timestamptz updated_at
++    }
++    messages {
++        uuid id PK
++        uuid conversation_id FK
++        text role "user|assistant"
++        text content
++        jsonb recommendations "nullable"
++        timestamptz created_at
++    }
++```
++
++### 发一条消息的时序
++
++```mermaid
++sequenceDiagram
++    participant UI as AIChatPanel
++    participant Hook as useConversations
++    participant API as /api/ai/chat
++    participant DB as Supabase
++
++    UI->>Hook: sendMessage("推荐一部电影")
++    alt activeId is null
++        Hook->>API: POST {message, conversation_id: null}
++        API->>DB: INSERT conversations (title=前20字)
++        API-->>Hook: SSE {type: "conversation", id: "..."}
++        Hook->>Hook: setActiveId(id)
++    else existing conversation
++        Hook->>API: POST {message, conversation_id}
++    end
++
++    API->>DB: INSERT message (role=user)
++    API->>DB: SELECT prior messages
++    API->>API: LLM stream
++    API-->>Hook: SSE {type: "content", content: "..."} x N
++    API->>DB: INSERT message (role=assistant, recommendations=jsonb)
++    API-->>Hook: SSE {type: "content", done: true}
++    Hook->>UI: 消息列表更新 + 推荐卡片
++```
++
++### 前端状态拓扑
++
++```
++AuthProvider
++  └─ AIChatPanel (UI only)
++       └─ useConversations(session)   ← 拥有所有状态
++              ├─ conversations: Conversation[]
++              ├─ activeId: string | null
++              ├─ messages: ChatMessage[]   (activeId 对应的)
++              ├─ loading / error
++              └─ 方法: select, create(lazy), send, rename, remove
++```
++
++## Implementation Units
++
++- [x] **Unit 1: DB schema — conversations + messages 表**
++
++**Goal:** 新建两张表 + RLS + 索引 + 触发器，为后续代码提供基础设施
++
++**Requirements:** R1, R2, R7, R8
++
++**Dependencies:** 无（现有 `profiles` 表 + `update_updated_at()` 触发器）
++
++**Files:**
++- Create: `supabase/migrations/005_add_ai_conversations.sql`
++
++**Approach:**
++- `conversations`：`id`, `user_id` (FK profiles ON DELETE CASCADE), `title` NOT NULL, `created_at`, `updated_at`
++- `messages`：`id`, `conversation_id` (FK conversations ON DELETE CASCADE), `role` (CHECK in `'user'`, `'assistant'`), `content` NOT NULL, `recommendations` jsonb nullable, `created_at`
++- RLS：两表都 enable，照 `users_{action}_own_{resource}` 四条 policy；messages 的 RLS 通过 JOIN conversations 判断（`EXISTS (SELECT 1 FROM conversations c WHERE c.id = messages.conversation_id AND c.user_id = auth.uid())`）或冗余存 `user_id`
++- 索引：`idx_conversations_user_id_updated_at (user_id, updated_at DESC)` 用于下拉列表；`idx_messages_conversation_id_created_at (conversation_id, created_at)` 用于消息按时序加载
++- 触发器：`conversations_updated_at` 复用 `public.update_updated_at()`；`messages_bump_conversation` 是新触发器——INSERT ON messages → `UPDATE conversations SET updated_at = now() WHERE id = NEW.conversation_id`
++
++**Patterns to follow:**
++- `supabase/migrations/001_initial_schema.sql`（items 表 + items_updated_at 触发器 + RLS 四件套）
++- `supabase/migrations/003_add_review_and_embeddings.sql`（另一个 RLS 样板，含 ON DELETE CASCADE 双层）
++
++**Test scenarios:** N/A（纯 schema）。Phase 2 的 DB 层测试间接覆盖。
++
++**Verification:**
++- `supabase db push` 或 Dashboard SQL Editor 执行通过
++- 新表在 Supabase Dashboard 可见，RLS 开关绿色
++- 随便 INSERT 一条 message，对应 conversations 行的 `updated_at` 被触发器 bump
++
++---
++
++- [x] **Unit 2: Backend — DB 层 + Pydantic schemas**
++
++**Goal:** 封装对 `conversations` / `messages` 的 CRUD 原语，独立可测
++
++**Requirements:** R1, R2, R7, R8
++
++**Dependencies:** Unit 1
++
++**Files:**
++- Create: `backend/app/db/conversations.py`
++- Modify: `backend/app/schemas.py`
++- Create: `backend/tests/test_conversations_db.py`
++
++**Approach:**
++- `schemas.py`：新增 `ConversationOut`（id, title, updated_at）和 `MessageOut`（id, role, content, recommendations, created_at）
++- `db/conversations.py` 函数（全部接受 `supabase.Client` + `user_id: str`，后端服务端严格过滤 `user_id`）：
++  - `list_conversations(client, user_id) -> list[dict]` —— ORDER BY updated_at DESC
++  - `get_conversation(client, user_id, conv_id) -> dict | None`
++  - `create_conversation(client, user_id, title) -> dict`
++  - `update_conversation_title(client, user_id, conv_id, title) -> dict`
++  - `delete_conversation(client, user_id, conv_id) -> None`（依赖 ON DELETE CASCADE 删消息）
++  - `list_messages(client, conversation_id) -> list[dict]` —— ORDER BY created_at
++  - `insert_message(client, conversation_id, role, content, recommendations=None) -> dict`
++- 每次写入都手动 `.eq('user_id', user_id)` 二次防护（service-role 绕过 RLS）
++
++**Patterns to follow:**
++- `backend/app/db/items.py`（已有的 CRUD 写法）
++- `backend/app/db/embeddings.py`（简单 upsert/select）
++
++**Test scenarios:**
++- `list_conversations` 过滤 user_id（mock client 返回两行不同 user_id，验证调用链 `.eq('user_id', TEST_USER)`）
++- `create_conversation` 返回含 id 的 dict
++- `insert_message` 带 recommendations jsonb 能正确序列化
++- `delete_conversation` 只调用 delete 一次（CASCADE 由 DB 保证，不做额外 messages 删除）
++
++**Verification:**
++- `pytest backend/tests/test_conversations_db.py` 全绿
++- mypy / ruff（如仓库里有）通过
++
++---
++
++- [x] **Unit 3: Backend — conversations CRUD 路由**
++
++**Goal:** 暴露 REST 端点供前端列出/创建（预留）/重命名/删除对话
++
++**Requirements:** R3, R4, R5
++
++**Dependencies:** Unit 2
++
++**Files:**
++- Create: `backend/app/routers/conversations.py`
++- Modify: `backend/app/main.py`（注册 router）
++- Create: `backend/tests/test_conversations_router.py`
++
++**Approach:**
++- 前缀 `/api/conversations`，tag `conversations`
++- 端点：
++  - `GET /` → `ResponseEnvelope(data=list_conversations)`
++  - `PATCH /{id}` body `{title: str}` → `ResponseEnvelope(data=updated)`
++  - `DELETE /{id}` → `ResponseEnvelope(data={deleted: true})`
++- 均用 `Depends(get_current_user_id)`；所有 DB 调用传 `user_id` 做过滤
++- **不提供 POST**：创建走 `/api/ai/chat` 懒创建路径（Unit 4）
++- 未找到 / 无权限 → 404（不泄露存在性区别）
++
++**Patterns to follow:**
++- `backend/app/routers/embeddings.py`（sync + single-item POST 的写法）
++- `backend/app/routers/items.py`（如果有，否则看 embeddings）
++
++**Test scenarios:**
++- `GET /api/conversations` 未登录 → 401/403
++- `GET /api/conversations` 登录 → 返回 list 数据
++- `PATCH` 自己的对话 → 200；别人的对话 → 404
++- `DELETE` 存在的 → 200；不存在的 → 404
++- 所有写操作验证 `user_id` 过滤生效
++
++**Verification:**
++- `pytest backend/tests/test_conversations_router.py` 全绿
++- 手动 `curl` 带 JWT 调用每个端点通过
++
++---
++
++- [x] **Unit 4: Backend — RAG/Search 多轮 + 消息持久化**
++
++**Goal:** `/api/ai/chat` 和 `/api/ai/search` 支持 `conversation_id`；服务层自动加载历史、流完写库；推荐卡片与助手消息绑定
++
++**Requirements:** R1, R5, R6, R7, R8
++
++**Dependencies:** Unit 2
++
++**Files:**
++- Modify: `backend/app/services/rag.py`
++- Modify: `backend/app/services/search.py`
++- Modify: `backend/app/routers/chat.py`
++- Modify: `backend/app/routers/search.py`
++- Modify: `backend/tests/test_rag_service.py`
++- Modify: `backend/tests/test_search_service.py`
++
++**Approach:**
++- 请求 body 加 `conversation_id: str | None = None`
++- 新 helper（可以放在 `backend/app/services/conversation_helpers.py` 或 inline 在 rag/search 里）：
++  - `ensure_conversation(client, user_id, conversation_id, first_user_message) -> (conversation_id, is_new)`：若 `None` → 创建新对话（title = first_user_message 前 20 字），否则直接返回
++  - `load_history(client, conversation_id) -> list[dict]`：返回 `[{role, content}, ...]`，ORDER BY created_at
++- **chat flow**（`chat_with_rag`）：
++  1. `ensure_conversation(...)` —— 若新建，流前先发一个 `{"type": "conversation", "id": "..."}` SSE 事件告知前端切 activeId
++  2. INSERT user message
++  3. `load_history`（含刚插入的 user message）+ retrieve_context(query) → format context → 构造 `messages = [system, *history_without_system_augmentation, user_with_context]`。注意：历史里本来存的 user message 是「原始 message」，而要给 LLM 的最后一条 user 需要带 RAG context，所以 history 回灌取 `[:-1]`，最后一条用 context-augmented 版本
++  4. 流 chunks 累积 `assistant_content`
++  5. 流结束：INSERT assistant message（content=累积文本，recommendations=None）
++- **search flow**（`search_with_tools`）：
++  1. `ensure_conversation(...)`，同样发 `{"type": "conversation"}`（在 `{"type": "recommendations"}` 之前）
++  2. INSERT user message
++  3. `load_history`；tool-selection 调用用 `[system, *history_without_last, user]`
++  4. 同样的 tool-results 合成流程
++  5. 流结束：INSERT assistant message（content=累积文本，recommendations=本次 `recommendations` 数组或 null）
++- **兼容性**：`conversation_id=None` 时不写库、不加载历史，行为等同现状（保留旧路径做 fallback）
++
++**Execution note:** 改造集中、有测试覆盖，适合在已有 test suite 指引下做。先改 `services/rag.py` 跑通单元测试再动 `search.py`。
++
++**Patterns to follow:**
++- `backend/app/services/rag.py`（当前单轮实现）
++- `backend/app/services/search.py:207-222`（两次 LLM 调用处）
++- `backend/app/routers/chat.py`（`StreamingResponse` + `event_generator`）
++
++**Test scenarios:**
++- `chat_with_rag` 无 `conversation_id` → 旧路径不变，不查 DB、不写 DB
++- `chat_with_rag` 有 `conversation_id` → 创建/写入都走 DB mock，消息 INSERT 两次（user + assistant）
++- `chat_with_rag` `conversation_id=None` 且传了 user 消息 → 懒创建新对话，标题取前 20 字
++- 超过 20 字的标题被正确截断
++- 历史 messages 被正确加载并纳入 LLM 的 `messages`（断言 mock 的 `chat.chat` 收到的 messages 长度 = history + 1）
++- `search_with_tools` 流完推荐卡片被写入 `messages.recommendations`
++- SSE 事件顺序正确：先 `conversation`（如果新建）→ `recommendations`（search only）→ `content` × N → `done`
++
++**Verification:**
++- `pytest backend/tests/test_rag_service.py backend/tests/test_search_service.py` 全绿
++- 手动 curl 两个端点分别带和不带 `conversation_id`，行为符合预期
++
++---
++
++- [x] **Unit 5: Frontend — 类型 + DataLayer 接口扩展**
++
++**Goal:** 建立 Conversation/Message/Recommendation 的前端类型；在 DataLayer 抽象中挂载对话 CRUD（Supabase 实现 + localStorage 抛错桩）
++
++**Requirements:** R1, R3, R4
++
++**Dependencies:** Unit 3（需要端点契约定型）
++
++**Files:**
++- Modify: `src/types.ts`（+ Conversation; 引用已有 ChatMessage）
++- Modify: `src/data/index.ts`（DataLayer interface 加 5 个方法）
++- Modify: `src/data/supabase.ts`（实现）
++- Modify: `src/data/localStorage.ts`（每个方法 throw）
++- Modify: `src/services/ai.ts`（把 ChatMessage/RecommendationItem 从 inline 提升为 `export type` 的规范形态，顺便加 `id?`, `recommendations?` 字段）
++
++**Approach:**
++- `types.ts`：
++  - `Conversation { id, title, updatedAt }`
++  - 复用 `src/services/ai.ts` 里的 `ChatMessage`（小幅扩展：`id?: string`, `recommendations?: RecommendationItem[]`）
++- `data/index.ts` DataLayer 新方法：`listConversations()`, `renameConversation(id, title)`, `deleteConversation(id)`, `listMessages(conversationId)`（注：listMessages 仍走后端 API，不直读 Supabase；但放在 DataLayer 保持一致 —— 或者放在 `services/ai.ts` 新 helper 里更合适）
++- **决策点**：为了不污染 DataLayer（它原本管结构化域数据），只把 `listConversations/renameConversation/deleteConversation` 放 DataLayer（Supabase JS SDK 直读直写），`listMessages` 放 `services/ai.ts`（调后端 HTTP，因为后端是唯一写入点，数据权威来源是后端。实际上 listMessages 也可以由 Supabase JS SDK 直读 RLS 过滤后的表，推荐走 Supabase 直读以节省后端）
++- **最终决策**：全部 3 个 conversation CRUD + 1 个 listMessages 走 Supabase JS SDK（RLS 保障），都放 DataLayer
++- `localStorage.ts`：5 个方法各自 `throw new Error('AI chat 需要登录')`
++
++**Patterns to follow:**
++- `src/data/supabase.ts::saveItem/deleteItem`（snake_case ↔ camelCase 映射 + 错误码处理）
++- `src/data/index.ts::DataLayer`（interface 声明风格）
++
++**Test scenarios:** N/A（前端无测试）
++
++**Verification:**
++- `npx tsc --noEmit` 只剩既有的 `import.meta.env` 预存错误，无新增
++- Supabase Dashboard 手动检查 RLS：登录 A，调 `listConversations` 只看到 A 的
++- 未登录态下进入 AI panel，相关 action 能被 `throw` 拦住（或被 UI 提示取代）
++
++---
++
++- [x] **Unit 6: Frontend — `useConversations` hook**
++
++**Goal:** 封装对话列表 + 活跃会话 + 消息 + 流式发送的全部状态和方法，供 `AIChatPanel` 消费
++
++**Requirements:** R1, R2, R5, R6
++
++**Dependencies:** Unit 5
++
++**Files:**
++- Create: `src/hooks/useConversations.ts`
++
++**Approach:**
++- 签名：`useConversations(dataLayer, accessToken)` —— 返回 `{ conversations, activeId, messages, recommendations, loading, error, selectConversation, newConversation, sendMessage, renameConversation, deleteConversation }`
++- 挂载时：
++  1. `dataLayer.listConversations()` → setConversations
++  2. 若非空 → `selectConversation(conversations[0].id)`（最近活跃 = 首条，因为按 updated_at DESC）
++  3. 若空 → `activeId = null`，显示欢迎态
++- `selectConversation(id)`：`dataLayer.listMessages(id)` → setMessages（同时把 `messages[].recommendations` 摊到 panel 状态或挂回 message 对象）
++- `newConversation()`：`setActiveId(null); setMessages([]); setRecommendations([])` —— 不调后端（懒创建）
++- `sendMessage(text)`：
++  1. 乐观追加 user message 到 `messages`
++  2. POST to `/api/ai/chat` 或 `/api/ai/search`（依 intent routing，逻辑从 AIChatPanel 抽出）with `{message, conversation_id: activeId}`
++  3. 消费 SSE 流：
++     - 收到 `{type: "conversation", id}` → setActiveId(id)，同时 prepend 到 `conversations`
++     - 收到 `{type: "recommendations", items}` → setRecommendations / 挂最新 assistant message
++     - 收到 `{type: "content", content, done}` → 累加到正在流的 assistant message
++  4. 流完整：更新本地 conversation 的 `updatedAt = now()`，重排到顶
++- `renameConversation(id, title)` / `deleteConversation(id)` → 调 DataLayer → 更新本地列表 → 若删的是 active，切到 conversations[0] 或清空
++
++**Patterns to follow:**
++- `src/hooks/useAuth.ts`（简洁 hook 样板）
++- `src/components/AIChatPanel.tsx:23-74`（现有 sendMessage 逻辑，搬进来优化）
++
++**Test scenarios:** N/A（前端无测试）
++
++**Verification:**
++- 在 `AIChatPanel` 使用 hook 后，手动验：登录 → 首次进入显示欢迎态 → 发消息 → 刷新页面 → 仍在该对话且能看到消息
++- 开 React DevTools 观察 state 变化节奏合理
++
++---
++
++- [x] **Unit 7: Frontend — `AIChatPanel` 整合 + 下拉切换 UI**
++
++**Goal:** 把 `AIChatPanel` 改造成纯展示层，标题栏加可点击下拉（列出对话、行内重命名、删除带二次确认、新建会话）
++
++**Requirements:** R3, R4, R5, R6, R7, R8
++
++**Dependencies:** Unit 6
++
++**Files:**
++- Modify: `src/components/AIChatPanel.tsx`
++- Modify: `src/index.css`（下拉样式）
++
++**Approach:**
++- 删除本地 `useState` for messages / recommendations / loading / error，改用 `useConversations` 返回值
++- 标题栏：现在是 `<h2>AI 助手</h2>`，改成按钮状元素：
++  - 默认显示 `当前对话.title` 或 `AI 助手`（空态）
++  - 点击 → 展开下拉面板（绝对定位在标题栏下方）
++  - 下拉内容：顶部「+ 新建会话」按钮；下方 conversations 列表，每行 title + 最后更新相对时间 + 右侧 hover 出现的「编辑」「删除」图标
++  - 行内编辑：点「编辑」→ title 变 `<input>`，Enter/blur 提交、Esc 取消
++  - 删除：点「删除」→ `window.confirm('确认删除对话「${title}」？')` → 是 → 调 hook.deleteConversation
++  - 点外部 / 选中一项 → 下拉收起（`useEffect` 监听全局 click / 加 `tabindex + onBlur`）
++- 推荐卡片的渲染：不再从面板级 `recommendations` 读，而是从 messages 里带 `recommendations` 字段的那条 assistant 消息渲染（绑定关系反映到 UI）
++- `App.tsx` 对 AIChatPanel 的用法不变（只改内部）
++
++**Patterns to follow:**
++- 现有 `Menu` / dropdown 组件（若有，未查明；否则按 `AuthModal.tsx` 的定位 + overlay 模式手写）
++- CSS 变量系统（`var(--card-bg)`, `var(--card-border)` 等，来自 `src/index.css`）
++
++**Test scenarios:** N/A（前端无测试）
++
++**Verification:**
++- 按 Unit 8 的验收清单逐条过
++- 视觉一致：下拉样式匹配现有 Modal / Panel 风格
++- 键盘：重命名输入框 Enter/Esc 生效，Tab 不跳出
++
++---
++
++- [x] **Unit 8: 验收清单**
++
++**Goal:** 按 CLAUDE.md 约定产出与本 plan 同名的 acceptance 清单
++
++**Requirements:** 所有
++
++**Dependencies:** Units 1-7 规划完（与实现并行编写）
++
++**Files:**
++- Create: `docs/acceptance-tests/2026-04-13-001-feat-ai-chat-multi-conversation-acceptance.md`
++
++**Approach:**
++- 按 Phase 组织（Phase 1 = DB + 后端；Phase 2 = 前端；Phase 3 = 端到端）
++- 每条用例 checkbox，引用 R 编号
++- 含「环境准备步骤」「常见坑」「与 Plan SC 的对应关系」
++
++**Verification:** 清单产出，走查一遍覆盖 R1-R8 全部
++
++---
++
++## System-Wide Impact
++
++- **Interaction graph**：`AIChatPanel` 由 `App.tsx` 单处引用，props 不变。新 hook `useConversations` 内部调 DataLayer 和 `services/ai.ts`；DataLayer 新方法受 `createDataLayer(session)` 分发，登录/未登录分支维持。
++- **Error propagation**：后端 DB 写失败 → `RuntimeError` → 由 StreamingResponse 的 generator `except` 捕获 → 发一个 `{type: "error", message}` SSE 事件 → 前端 hook 转成 `error` state → UI 红条展示。用户消息若入库失败，整次请求失败（不展示用户消息）。
++- **State lifecycle risks**：
++  - 流中途用户切换对话 → 需要 AbortController 取消 fetch；旧流的 chunks 被 stale check 丢弃
++  - 流完成后服务端 INSERT 失败 → 助手内容已在前端展示，但刷新后消失。用户会困惑。**缓解**：接收完整助手消息后前端 re-select 当前对话拉一次 messages 验证落库；不一致 → 提示「最后一条消息未保存成功」
++  - 删除 active 对话期间另一浏览器 tab 在同一对话里发消息 → 后端 ON DELETE CASCADE 保证不留孤儿；但那个 tab 会在 SSE 过程中报 FK 错误。非 MVP 优化。
++- **API surface parity**：新 router `/api/conversations/*`；`/api/ai/chat` 和 `/api/ai/search` 多一个可选 `conversation_id` 字段。前端 AI SDK（`src/services/ai.ts`）的 `streamChat/streamSearch` 签名多一个参数。
++- **Integration coverage**：
++  - 后端单元测试覆盖 db 层 + router + service 的 mock 路径
++  - 跨层行为（SSE 事件顺序、新建对话 id 回传、流完 INSERT 原子性）靠 Unit 8 的手工验收清单
++
++## Risks & Dependencies
++
++- **SSE + DB 写入一致性**（中等）：网络抖动导致客户端断开、服务端已发完 chunks 但 INSERT 前进程死 → 用户看到完整回复但没入库。缓解：写入失败在后端 log；前端载入对话时若缺最后一条 assistant 消息，温和提示（延期到下一个迭代优化）
++- **Service-role key 越权**（高）：新 DB 层任何函数忘记 `.eq('user_id', user_id)` 就是安全漏洞。缓解：Unit 2 测试显式覆盖每个函数的 user_id 过滤断言；code review 时重点查
++- **Supabase migration 不可回滚**（中等）：003 → 004 的经验是前端期望维度和 DB 列类型必须一致。缓解：005 只加表，不改现有；前端代码的新字段必须对应 DB 实际行为（走 Unit 5 的 TS 类型校验）
++- **历史对话变长 → LLM context 爆炸**（非 MVP 风险）：scope 里明确不做裁剪。缓解：监控 `messages` 行数；后续加上下文管理是一个独立 brainstorm
++- **依赖顺序**：必须 Unit 1 → Unit 2 → (Unit 3 || Unit 4) → Unit 5 → Unit 6 → Unit 7。Unit 8 与 Unit 7 并行。
++
++## Documentation / Operational Notes
++
++- `PLAN.md`：如其跟踪已完成功能，完成后在「AI 功能」section 标记「多会话持久化 ✓」
++- `README.md`：如有功能清单，加一句说明
++- `backend/.env.example`：本次无新环境变量
++- 前端本地 localStorage 无新增 key（对话数据全部 Supabase）
++- 后端监控：可考虑日志记录 `INSERT message` 的耗时，观察 RPM 与 DB 写入瓶颈（后续）
++
++## Sources & References
++
++- **Origin document:** [docs/brainstorms/2026-04-13-ai-chat-multi-conversation-requirements.md](../brainstorms/2026-04-13-ai-chat-multi-conversation-requirements.md)
++- Related migrations: `supabase/migrations/001_initial_schema.sql`, `003_add_review_and_embeddings.sql`
++- Related frontend: `src/data/supabase.ts`, `src/hooks/useAuth.ts`, `src/components/AIChatPanel.tsx`, `src/services/ai.ts`
++- Related backend: `backend/app/services/rag.py`, `backend/app/services/search.py`, `backend/app/routers/chat.py`, `backend/app/routers/search.py`, `backend/app/db/items.py`, `backend/app/db/supabase_client.py`
++- Related tests: `backend/tests/test_rag_service.py`, `backend/tests/test_search_service.py`
++- Project convention: `CLAUDE.md`（Compound Engineering 工作流 + 验收清单要求）
+diff --git a/src/components/AIChatPanel.tsx b/src/components/AIChatPanel.tsx
+index 1e6d2ed..f9e894f 100644
+--- a/src/components/AIChatPanel.tsx
++++ b/src/components/AIChatPanel.tsx
+@@ -1,83 +1,124 @@
+-import { useState, useRef, useEffect } from 'react'
++import { useEffect, useMemo, useRef, useState } from 'react'
+ import { useAuth } from '../hooks/useAuth'
+-import { streamChat, streamSearch, type ChatMessage, type RecommendationItem } from '../services/ai'
++import { useConversations } from '../hooks/useConversations'
++import { createDataLayer } from '../data'
+ 
+ interface Props {
+   onClose: () => void
+   onAddItem?: (prefill: { title: string; description?: string; categoryId?: string }) => void
+ }
+ 
++function formatRelativeTime(ts: number): string {
++  const delta = Date.now() - ts
++  if (delta < 60_000) return '刚刚'
++  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`
++  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`
++  if (delta < 7 * 86_400_000) return `${Math.floor(delta / 86_400_000)} 天前`
++  const d = new Date(ts)
++  const pad = (n: number) => n.toString().padStart(2, '0')
++  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
++}
++
+ export default function AIChatPanel({ onClose, onAddItem }: Props) {
+   const { session } = useAuth()
+-  const [messages, setMessages] = useState<ChatMessage[]>([])
++  const dataLayer = useMemo(() => createDataLayer(session), [session])
++  const accessToken = session?.access_token ?? null
++
++  const {
++    conversations,
++    activeId,
++    messages,
++    loading,
++    streaming,
++    error,
++    selectConversation,
++    newConversation,
++    sendMessage,
++    renameConversation,
++    deleteConversation,
++  } = useConversations(dataLayer, accessToken)
++
+   const [input, setInput] = useState('')
+-  const [loading, setLoading] = useState(false)
+-  const [error, setError] = useState<string | null>(null)
+-  const [recommendations, setRecommendations] = useState<RecommendationItem[]>([])
++  const [dropdownOpen, setDropdownOpen] = useState(false)
++  const [editingId, setEditingId] = useState<string | null>(null)
++  const [editValue, setEditValue] = useState('')
+   const messagesEndRef = useRef<HTMLDivElement>(null)
++  const dropdownWrapRef = useRef<HTMLDivElement>(null)
++
++  const activeConversation = conversations.find(c => c.id === activeId) ?? null
++  const titleText = activeConversation?.title ?? 'AI 助手'
+ 
+   useEffect(() => {
+     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+   }, [messages])
+ 
+-  async function handleSend(text?: string) {
+-    const message = text || input.trim()
+-    if (!message || loading) return
+-    if (!session?.access_token) {
+-      setError('请先登录后使用 AI 功能')
+-      return
++  useEffect(() => {
++    if (!dropdownOpen) return
++    function onDocClick(e: MouseEvent) {
++      if (!dropdownWrapRef.current) return
++      if (!dropdownWrapRef.current.contains(e.target as Node)) {
++        setDropdownOpen(false)
++        setEditingId(null)
++      }
+     }
++    document.addEventListener('mousedown', onDocClick)
++    return () => document.removeEventListener('mousedown', onDocClick)
++  }, [dropdownOpen])
+ 
++  async function handleSend(text?: string) {
++    const message = text ?? input
++    if (!message.trim() || streaming) return
+     setInput('')
+-    setError(null)
+-    setRecommendations([])
+-    setMessages(prev => [...prev, { role: 'user', content: message }])
+-    setLoading(true)
++    await sendMessage(message)
++  }
++
++  function handleKeyDown(e: React.KeyboardEvent) {
++    if (e.key === 'Enter' && !e.shiftKey) {
++      e.preventDefault()
++      void handleSend()
++    }
++  }
++
++  function handleNewConversation() {
++    newConversation()
++    setDropdownOpen(false)
++    setEditingId(null)
++  }
++
++  function handleSelect(id: string) {
++    if (id === activeId) {
++      setDropdownOpen(false)
++      return
++    }
++    void selectConversation(id)
++    setDropdownOpen(false)
++    setEditingId(null)
++  }
+ 
+-    // Determine if this is a search/recommendation or a chat query
+-    const isSearch = message.includes('推荐') || message.includes('找') || message.includes('搜索')
++  function startEdit(id: string, currentTitle: string) {
++    setEditingId(id)
++    setEditValue(currentTitle)
++  }
+ 
++  async function commitEdit(id: string) {
++    const trimmed = editValue.trim()
++    setEditingId(null)
++    if (!trimmed) return
++    const existing = conversations.find(c => c.id === id)
++    if (!existing || existing.title === trimmed) return
+     try {
+-      let assistantContent = ''
+-      setMessages(prev => [...prev, { role: 'assistant', content: '' }])
+-
+-      if (isSearch) {
+-        for await (const chunk of streamSearch(message, session.access_token)) {
+-          if (chunk.type === 'recommendations' && chunk.items) {
+-            setRecommendations(chunk.items)
+-          } else if (chunk.type === 'content') {
+-            assistantContent += chunk.content || ''
+-            setMessages(prev => {
+-              const updated = [...prev]
+-              updated[updated.length - 1] = { role: 'assistant', content: assistantContent }
+-              return updated
+-            })
+-          }
+-        }
+-      } else {
+-        for await (const chunk of streamChat(message, session.access_token)) {
+-          assistantContent += chunk.content || ''
+-          setMessages(prev => {
+-            const updated = [...prev]
+-            updated[updated.length - 1] = { role: 'assistant', content: assistantContent }
+-            return updated
+-          })
+-          if (chunk.done) break
+-        }
+-      }
+-    } catch (err: any) {
+-      setError(err.message || 'AI 请求失败，请稍后重试')
+-      // Remove the empty assistant message on error
+-      setMessages(prev => prev.filter(m => m.content !== ''))
+-    } finally {
+-      setLoading(false)
++      await renameConversation(id, trimmed)
++    } catch {
++      // Hook surfaces errors via console — keep UI quiet; user can retry
+     }
+   }
+ 
+-  function handleKeyDown(e: React.KeyboardEvent) {
+-    if (e.key === 'Enter' && !e.shiftKey) {
+-      e.preventDefault()
+-      handleSend()
++  async function handleDelete(id: string, title: string) {
++    if (!window.confirm(`确认删除对话「${title}」？`)) return
++    try {
++      await deleteConversation(id)
++    } catch {
++      // ignore — Supabase errors propagate via hook
+     }
+   }
+ 
+@@ -87,15 +128,106 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
+     { label: '推荐一本书', query: '根据我的喜好推荐一本书' },
+   ]
+ 
++  const showWelcome = !activeId && messages.length === 0
++
+   return (
+     <div className="ai-chat-panel">
+       <div className="ai-chat-header">
+-        <h2 className="ai-chat-title">AI 助手</h2>
+-        <button className="ai-chat-close" onClick={onClose}>×</button>
++        <div className="ai-chat-title-wrap" ref={dropdownWrapRef}>
++          <button
++            className="ai-chat-title-btn"
++            onClick={() => setDropdownOpen(v => !v)}
++            disabled={!accessToken}
++            aria-haspopup="listbox"
++            aria-expanded={dropdownOpen}
++          >
++            <span className="ai-chat-title">{titleText}</span>
++            <span className="ai-chat-title-caret">▾</span>
++          </button>
++
++          {dropdownOpen && (
++            <div className="ai-chat-dropdown" role="listbox">
++              <button
++                className="ai-chat-dropdown-new"
++                onClick={handleNewConversation}
++              >
++                + 新建会话
++              </button>
++              {conversations.length === 0 ? (
++                <div className="ai-chat-dropdown-empty">暂无历史对话</div>
++              ) : (
++                <ul className="ai-chat-dropdown-list">
++                  {conversations.map(c => (
++                    <li
++                      key={c.id}
++                      className={`ai-chat-dropdown-item${c.id === activeId ? ' is-active' : ''}`}
++                    >
++                      {editingId === c.id ? (
++                        <input
++                          className="ai-chat-dropdown-edit"
++                          autoFocus
++                          value={editValue}
++                          onChange={e => setEditValue(e.target.value)}
++                          onBlur={() => void commitEdit(c.id)}
++                          onKeyDown={e => {
++                            if (e.key === 'Enter') {
++                              e.preventDefault()
++                              void commitEdit(c.id)
++                            } else if (e.key === 'Escape') {
++                              e.preventDefault()
++                              setEditingId(null)
++                            }
++                          }}
++                        />
++                      ) : (
++                        <button
++                          className="ai-chat-dropdown-pick"
++                          onClick={() => handleSelect(c.id)}
++                        >
++                          <span className="ai-chat-dropdown-title">{c.title}</span>
++                          <span className="ai-chat-dropdown-time">
++                            {formatRelativeTime(c.updatedAt)}
++                          </span>
++                        </button>
++                      )}
++                      {editingId !== c.id && (
++                        <div className="ai-chat-dropdown-actions">
++                          <button
++                            className="ai-chat-dropdown-action"
++                            title="重命名"
++                            onClick={e => {
++                              e.stopPropagation()
++                              startEdit(c.id, c.title)
++                            }}
++                          >
++                            ✎
++                          </button>
++                          <button
++                            className="ai-chat-dropdown-action"
++                            title="删除"
++                            onClick={e => {
++                              e.stopPropagation()
++                              void handleDelete(c.id, c.title)
++                            }}
++                          >
++                            ✕
++                          </button>
++                        </div>
++                      )}
++                    </li>
++                  ))}
++                </ul>
++              )}
++            </div>
++          )}
++        </div>
++        <button className="ai-chat-close" onClick={onClose} aria-label="关闭">
++          ×
++        </button>
+       </div>
+ 
+       <div className="ai-chat-messages">
+-        {messages.length === 0 && (
++        {showWelcome && (
+           <div className="ai-chat-welcome">
+             <span className="ai-chat-welcome-icon">✦</span>
+             <p>你好！我是你的 AI 品味助手。</p>
+@@ -105,7 +237,8 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
+                 <button
+                   key={action.query}
+                   className="ai-chat-quick-btn"
+-                  onClick={() => handleSend(action.query)}
++                  onClick={() => void handleSend(action.query)}
++                  disabled={!accessToken || streaming}
+                 >
+                   {action.label}
+                 </button>
+@@ -114,60 +247,74 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
+           </div>
+         )}
+ 
+-        {messages.map((msg, i) => (
+-          <div key={i} className={`ai-chat-msg ai-chat-msg-${msg.role}`}>
+-            <div className="ai-chat-msg-content">
+-              {msg.content || (loading && i === messages.length - 1 ? '思考中…' : '')}
+-            </div>
+-          </div>
+-        ))}
+-
+-        {recommendations.length > 0 && (
+-          <div className="ai-chat-recs">
+-            {recommendations.map((rec, i) => (
+-              <div key={i} className="ai-chat-rec-card">
+-                {rec.coverUrl ? (
+-                  <img className="ai-chat-rec-cover" src={rec.coverUrl} alt={rec.title} />
+-                ) : (
+-                  <div className="ai-chat-rec-cover ai-chat-rec-cover-empty">?</div>
+-                )}
+-                <div className="ai-chat-rec-info">
+-                  <div className="ai-chat-rec-title">{rec.title}</div>
+-                  {rec.year && <span className="ai-chat-rec-year">{rec.year}</span>}
+-                  {rec.description && (
+-                    <div className="ai-chat-rec-desc">{rec.description}</div>
+-                  )}
+-                  <button
+-                    className="ai-chat-rec-add"
+-                    onClick={() => onAddItem?.({
+-                      title: rec.title,
+-                      description: rec.description || '',
+-                    })}
+-                  >
+-                    + 收藏
+-                  </button>
+-                </div>
+-              </div>
+-            ))}
+-          </div>
++        {loading && messages.length === 0 && !showWelcome && (
++          <div className="ai-chat-welcome">加载中…</div>
+         )}
+ 
+-        {error && (
+-          <div className="ai-chat-error">{error}</div>
+-        )}
++        {messages.map((msg, i) => {
++          const isLast = i === messages.length - 1
++          const placeholder =
++            streaming && isLast && msg.role === 'assistant' && !msg.content
++              ? '思考中…'
++              : ''
++          return (
++            <div key={i} className={`ai-chat-msg ai-chat-msg-${msg.role}`}>
++              <div className="ai-chat-msg-content">{msg.content || placeholder}</div>
++              {msg.role === 'assistant' &&
++                msg.recommendations &&
++                msg.recommendations.length > 0 && (
++                  <div className="ai-chat-recs">
++                    {msg.recommendations.map((rec, ri) => (
++                      <div key={ri} className="ai-chat-rec-card">
++                        {rec.coverUrl ? (
++                          <img
++                            className="ai-chat-rec-cover"
++                            src={rec.coverUrl}
++                            alt={rec.title}
++                          />
++                        ) : (
++                          <div className="ai-chat-rec-cover ai-chat-rec-cover-empty">?</div>
++                        )}
++                        <div className="ai-chat-rec-info">
++                          <div className="ai-chat-rec-title">{rec.title}</div>
++                          {rec.year && <span className="ai-chat-rec-year">{rec.year}</span>}
++                          {rec.description && (
++                            <div className="ai-chat-rec-desc">{rec.description}</div>
++                          )}
++                          <button
++                            className="ai-chat-rec-add"
++                            onClick={() =>
++                              onAddItem?.({
++                                title: rec.title,
++                                description: rec.description || '',
++                              })
++                            }
++                          >
++                            + 收藏
++                          </button>
++                        </div>
++                      </div>
++                    ))}
++                  </div>
++                )}
++            </div>
++          )
++        })}
++
++        {error && <div className="ai-chat-error">{error}</div>}
+ 
+         <div ref={messagesEndRef} />
+       </div>
+ 
+       <div className="ai-chat-input-area">
+-        {messages.length > 0 && (
++        {!showWelcome && messages.length > 0 && (
+           <div className="ai-chat-quick-actions ai-chat-quick-inline">
+             {quickActions.map(action => (
+               <button
+                 key={action.query}
+                 className="ai-chat-quick-btn"
+-                onClick={() => handleSend(action.query)}
+-                disabled={loading}
++                onClick={() => void handleSend(action.query)}
++                disabled={streaming || !accessToken}
+               >
+                 {action.label}
+               </button>
+@@ -180,15 +327,15 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
+             value={input}
+             onChange={e => setInput(e.target.value)}
+             onKeyDown={handleKeyDown}
+-            placeholder="输入你的问题…"
+-            disabled={loading}
++            placeholder={accessToken ? '输入你的问题…' : '请先登录后使用 AI 功能'}
++            disabled={streaming || !accessToken}
+           />
+           <button
+             className="ai-chat-send"
+-            onClick={() => handleSend()}
+-            disabled={loading || !input.trim()}
++            onClick={() => void handleSend()}
++            disabled={streaming || !input.trim() || !accessToken}
+           >
+-            {loading ? '···' : '→'}
++            {streaming ? '···' : '→'}
+           </button>
+         </div>
+       </div>
+diff --git a/src/data/index.ts b/src/data/index.ts
+index ffcfb1b..659e47d 100644
+--- a/src/data/index.ts
++++ b/src/data/index.ts
+@@ -1,5 +1,6 @@
+ import type { Session } from '@supabase/supabase-js'
+-import type { Item, Category, LogbookEntry, ItemStatus } from '../types'
++import type { Item, Category, LogbookEntry, ItemStatus, Conversation } from '../types'
++import type { ChatMessage } from '../services/ai'
+ import { LocalStorageDataLayer } from './localStorage'
+ import { SupabaseDataLayer } from './supabase'
+ import { supabase } from '../lib/supabase'
+@@ -15,6 +16,11 @@ export interface DataLayer {
+   getLogEntries(filters?: { categoryId?: string; status?: ItemStatus }): Promise<LogbookEntry[]>
+   bulkSaveItems(items: Item[]): Promise<void>
+   bulkSaveCategories(categories: Category[]): Promise<void>
++  // AI chat conversations (login-only)
++  listConversations(): Promise<Conversation[]>
++  listMessages(conversationId: string): Promise<ChatMessage[]>
++  renameConversation(id: string, title: string): Promise<Conversation>
++  deleteConversation(id: string): Promise<void>
+ }
+ 
+ export function createDataLayer(session?: Session | null): DataLayer {
+diff --git a/src/data/localStorage.ts b/src/data/localStorage.ts
+index 0fd1b90..33aaf18 100644
+--- a/src/data/localStorage.ts
++++ b/src/data/localStorage.ts
+@@ -1,4 +1,5 @@
+-import type { Item, Category, LogbookEntry, ItemStatus } from '../types'
++import type { Item, Category, LogbookEntry, ItemStatus, Conversation } from '../types'
++import type { ChatMessage } from '../services/ai'
+ import type { DataLayer } from './index'
+ 
+ const DATA_KEY = 'liker_data'
+@@ -407,4 +408,20 @@ export class LocalStorageDataLayer implements DataLayer {
+     }
+     saveRaw(data.items, [...existing.values()])
+   }
++
++  async listConversations(): Promise<Conversation[]> {
++    throw new Error('AI 助手需要登录后使用')
++  }
++
++  async listMessages(_conversationId: string): Promise<ChatMessage[]> {
++    throw new Error('AI 助手需要登录后使用')
++  }
++
++  async renameConversation(_id: string, _title: string): Promise<Conversation> {
++    throw new Error('AI 助手需要登录后使用')
++  }
++
++  async deleteConversation(_id: string): Promise<void> {
++    throw new Error('AI 助手需要登录后使用')
++  }
+ }
+diff --git a/src/data/supabase.ts b/src/data/supabase.ts
+index b9a90bc..6b94f52 100644
+--- a/src/data/supabase.ts
++++ b/src/data/supabase.ts
+@@ -1,5 +1,6 @@
+ import type { SupabaseClient, User } from '@supabase/supabase-js'
+-import type { Item, Category, LogbookEntry, ItemStatus } from '../types'
++import type { Item, Category, LogbookEntry, ItemStatus, Conversation } from '../types'
++import type { ChatMessage, RecommendationItem } from '../services/ai'
+ import type { DataLayer } from './index'
+ 
+ function toItem(row: any): Item {
+@@ -61,6 +62,24 @@ function toLogEntry(row: any): LogbookEntry {
+   }
+ }
+ 
++function toConversation(row: any): Conversation {
++  return {
++    id: row.id,
++    title: row.title,
++    createdAt: new Date(row.created_at).getTime(),
++    updatedAt: new Date(row.updated_at).getTime(),
++  }
++}
++
++function toChatMessage(row: any): ChatMessage {
++  return {
++    id: row.id,
++    role: row.role,
++    content: row.content,
++    recommendations: (row.recommendations ?? undefined) as RecommendationItem[] | undefined,
++  }
++}
++
+ export class SupabaseDataLayer implements DataLayer {
+   constructor(
+     private supabase: SupabaseClient,
+@@ -190,4 +209,47 @@ export class SupabaseDataLayer implements DataLayer {
+       throw error
+     }
+   }
++
++  // ── AI chat conversations ──
++
++  async listConversations(): Promise<Conversation[]> {
++    const { data, error } = await this.supabase
++      .from('conversations')
++      .select('*')
++      .eq('user_id', this.user.id)
++      .order('updated_at', { ascending: false })
++    if (error) throw error
++    return (data ?? []).map(toConversation)
++  }
++
++  async listMessages(conversationId: string): Promise<ChatMessage[]> {
++    const { data, error } = await this.supabase
++      .from('messages')
++      .select('*')
++      .eq('conversation_id', conversationId)
++      .order('created_at', { ascending: true })
++    if (error) throw error
++    return (data ?? []).map(toChatMessage)
++  }
++
++  async renameConversation(id: string, title: string): Promise<Conversation> {
++    const { data, error } = await this.supabase
++      .from('conversations')
++      .update({ title })
++      .eq('id', id)
++      .eq('user_id', this.user.id)
++      .select()
++      .single()
++    if (error) throw error
++    return toConversation(data)
++  }
++
++  async deleteConversation(id: string): Promise<void> {
++    const { error } = await this.supabase
++      .from('conversations')
++      .delete()
++      .eq('id', id)
++      .eq('user_id', this.user.id)
++    if (error) throw error
++  }
+ }
+diff --git a/src/hooks/useConversations.ts b/src/hooks/useConversations.ts
+new file mode 100644
+index 0000000..201c2e7
+--- /dev/null
++++ b/src/hooks/useConversations.ts
+@@ -0,0 +1,253 @@
++import { useCallback, useEffect, useRef, useState } from 'react'
++import type { DataLayer } from '../data'
++import type { Conversation } from '../types'
++import {
++  streamChat,
++  streamSearch,
++  type ChatMessage,
++  type RecommendationItem,
++} from '../services/ai'
++
++interface UseConversationsResult {
++  conversations: Conversation[]
++  activeId: string | null
++  messages: ChatMessage[]
++  loading: boolean
++  streaming: boolean
++  error: string | null
++  /** Load a conversation's messages and make it active. */
++  selectConversation: (id: string) => Promise<void>
++  /** Clear the active conversation and show the welcome state. */
++  newConversation: () => void
++  /** Send a user message (streams through /api/ai/chat or /api/ai/search). */
++  sendMessage: (text: string) => Promise<void>
++  /** Rename a conversation on the server + in local state. */
++  renameConversation: (id: string, title: string) => Promise<void>
++  /** Delete a conversation. If it was active, resets to the welcome state or
++   *  the next most recent conversation. */
++  deleteConversation: (id: string) => Promise<void>
++}
++
++function isSearchIntent(message: string): boolean {
++  return (
++    message.includes('推荐') ||
++    message.includes('找') ||
++    message.includes('搜索')
++  )
++}
++
++export function useConversations(
++  dataLayer: DataLayer,
++  accessToken: string | null,
++): UseConversationsResult {
++  const [conversations, setConversations] = useState<Conversation[]>([])
++  const [activeId, setActiveId] = useState<string | null>(null)
++  const [messages, setMessages] = useState<ChatMessage[]>([])
++  const [loading, setLoading] = useState(false)
++  const [streaming, setStreaming] = useState(false)
++  const [error, setError] = useState<string | null>(null)
++
++  // Guard against concurrent sends / stale fetches when the user
++  // switches conversations mid-stream.
++  const streamingRef = useRef(false)
++
++  const selectConversation = useCallback(
++    async (id: string) => {
++      setActiveId(id)
++      setError(null)
++      setLoading(true)
++      try {
++        const rows = await dataLayer.listMessages(id)
++        setMessages(rows)
++      } catch (err: unknown) {
++        setError(err instanceof Error ? err.message : '加载消息失败')
++        setMessages([])
++      } finally {
++        setLoading(false)
++      }
++    },
++    [dataLayer],
++  )
++
++  // Initial load: list conversations; select the most recent if any.
++  useEffect(() => {
++    if (!accessToken) {
++      setConversations([])
++      setActiveId(null)
++      setMessages([])
++      return
++    }
++    let cancelled = false
++    ;(async () => {
++      setLoading(true)
++      setError(null)
++      try {
++        const list = await dataLayer.listConversations()
++        if (cancelled) return
++        setConversations(list)
++        if (list.length > 0) {
++          await selectConversation(list[0].id)
++        } else {
++          setActiveId(null)
++          setMessages([])
++        }
++      } catch (err: unknown) {
++        if (cancelled) return
++        setError(err instanceof Error ? err.message : '加载对话失败')
++      } finally {
++        if (!cancelled) setLoading(false)
++      }
++    })()
++    return () => {
++      cancelled = true
++    }
++  }, [accessToken, dataLayer, selectConversation])
++
++  const newConversation = useCallback(() => {
++    setActiveId(null)
++    setMessages([])
++    setError(null)
++  }, [])
++
++  const sendMessage = useCallback(
++    async (text: string) => {
++      const trimmed = text.trim()
++      if (!trimmed || streamingRef.current) return
++      if (!accessToken) {
++        setError('请先登录后使用 AI 功能')
++        return
++      }
++      streamingRef.current = true
++      setStreaming(true)
++      setError(null)
++
++      // Optimistic user message + placeholder assistant message.
++      setMessages(prev => [
++        ...prev,
++        { role: 'user', content: trimmed },
++        { role: 'assistant', content: '' },
++      ])
++
++      const intentIsSearch = isSearchIntent(trimmed)
++      const startingId = activeId
++      let liveId = startingId
++      let assistantContent = ''
++      let assistantRecs: RecommendationItem[] | undefined
++
++      try {
++        const stream = intentIsSearch
++          ? streamSearch(trimmed, accessToken, startingId)
++          : streamChat(trimmed, accessToken, startingId)
++
++        for await (const event of stream) {
++          if (event.type === 'conversation') {
++            liveId = event.id
++            setActiveId(event.id)
++            // Prepend an optimistic conversation row; the real title/timestamps
++            // will be corrected on the next listConversations refresh.
++            setConversations(prev => [
++              {
++                id: event.id,
++                title: trimmed.slice(0, 20) || '新对话',
++                createdAt: Date.now(),
++                updatedAt: Date.now(),
++              },
++              ...prev,
++            ])
++          } else if (event.type === 'recommendations') {
++            assistantRecs = event.items
++            setMessages(prev => {
++              const updated = [...prev]
++              const last = updated[updated.length - 1]
++              if (last && last.role === 'assistant') {
++                updated[updated.length - 1] = {
++                  ...last,
++                  recommendations: event.items,
++                }
++              }
++              return updated
++            })
++          } else if (event.type === 'content') {
++            assistantContent += event.content || ''
++            setMessages(prev => {
++              const updated = [...prev]
++              updated[updated.length - 1] = {
++                role: 'assistant',
++                content: assistantContent,
++                recommendations: assistantRecs,
++              }
++              return updated
++            })
++            if (event.done) break
++          }
++        }
++
++        // Bump the active conversation's updatedAt and re-sort so the just-used
++        // one floats to the top.
++        if (liveId) {
++          setConversations(prev => {
++            const idx = prev.findIndex(c => c.id === liveId)
++            if (idx < 0) return prev
++            const bumped = { ...prev[idx], updatedAt: Date.now() }
++            const next = [bumped, ...prev.filter((_, i) => i !== idx)]
++            return next
++          })
++        }
++      } catch (err: unknown) {
++        setError(err instanceof Error ? err.message : 'AI 请求失败')
++        // Drop the empty assistant placeholder on failure.
++        setMessages(prev => prev.filter(m => !(m.role === 'assistant' && !m.content)))
++      } finally {
++        streamingRef.current = false
++        setStreaming(false)
++      }
++    },
++    [accessToken, activeId],
++  )
++
++  const renameConversation = useCallback(
++    async (id: string, title: string) => {
++      const cleaned = title.trim()
++      if (!cleaned) return
++      const updated = await dataLayer.renameConversation(id, cleaned)
++      setConversations(prev =>
++        prev.map(c => (c.id === id ? { ...c, title: updated.title } : c)),
++      )
++    },
++    [dataLayer],
++  )
++
++  const deleteConversation = useCallback(
++    async (id: string) => {
++      await dataLayer.deleteConversation(id)
++      setConversations(prev => {
++        const next = prev.filter(c => c.id !== id)
++        if (id === activeId) {
++          // Active one was removed — pick the next most recent or reset.
++          if (next.length > 0) {
++            void selectConversation(next[0].id)
++          } else {
++            setActiveId(null)
++            setMessages([])
++          }
++        }
++        return next
++      })
++    },
++    [activeId, dataLayer, selectConversation],
++  )
++
++  return {
++    conversations,
++    activeId,
++    messages,
++    loading,
++    streaming,
++    error,
++    selectConversation,
++    newConversation,
++    sendMessage,
++    renameConversation,
++    deleteConversation,
++  }
++}
+diff --git a/src/index.css b/src/index.css
+index e69e531..57130c4 100644
+--- a/src/index.css
++++ b/src/index.css
+@@ -2392,12 +2392,156 @@ html[data-theme="forest"] {
+   border-bottom: 1px solid var(--card-border);
+   flex-shrink: 0;
+ }
++.ai-chat-title-wrap {
++  position: relative;
++  flex: 1;
++  min-width: 0;
++}
++.ai-chat-title-btn {
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  max-width: 100%;
++  padding: 4px 10px;
++  margin: -4px -10px;
++  border: none;
++  background: transparent;
++  color: var(--text);
++  cursor: pointer;
++  border-radius: 6px;
++  transition: background 0.15s ease;
++  font-family: inherit;
++}
++.ai-chat-title-btn:hover:not(:disabled) { background: var(--bg-hover); }
++.ai-chat-title-btn:disabled { cursor: default; opacity: 0.7; }
+ .ai-chat-title {
+   font-family: var(--font-d);
+   font-size: 18px;
+   font-weight: 600;
+   color: var(--text);
+   margin: 0;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++.ai-chat-title-caret {
++  font-size: 12px;
++  color: var(--text-3);
++  flex-shrink: 0;
++}
++.ai-chat-dropdown {
++  position: absolute;
++  top: calc(100% + 8px);
++  left: 0;
++  width: 300px;
++  max-height: 60vh;
++  background: var(--card-bg);
++  border: 1px solid var(--card-border);
++  border-radius: 8px;
++  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
++  z-index: 110;
++  display: flex;
++  flex-direction: column;
++  overflow: hidden;
++}
++.ai-chat-dropdown-new {
++  padding: 10px 14px;
++  border: none;
++  border-bottom: 1px solid var(--card-border);
++  background: transparent;
++  color: var(--coral);
++  font-size: 13px;
++  font-family: var(--font-ui);
++  text-align: left;
++  cursor: pointer;
++  transition: background 0.15s ease;
++}
++.ai-chat-dropdown-new:hover { background: var(--tint-bg); }
++.ai-chat-dropdown-empty {
++  padding: 16px;
++  color: var(--text-3);
++  font-size: 13px;
++  text-align: center;
++}
++.ai-chat-dropdown-list {
++  list-style: none;
++  margin: 0;
++  padding: 4px 0;
++  overflow-y: auto;
++}
++.ai-chat-dropdown-item {
++  display: flex;
++  align-items: center;
++  padding: 0 6px;
++  position: relative;
++}
++.ai-chat-dropdown-item.is-active .ai-chat-dropdown-title {
++  color: var(--coral);
++}
++.ai-chat-dropdown-item:hover { background: var(--tint-bg); }
++.ai-chat-dropdown-pick {
++  flex: 1;
++  min-width: 0;
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 8px;
++  padding: 8px 8px;
++  border: none;
++  background: transparent;
++  text-align: left;
++  cursor: pointer;
++  font-family: var(--font-ui);
++}
++.ai-chat-dropdown-title {
++  font-size: 13px;
++  color: var(--text);
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++  flex: 1;
++}
++.ai-chat-dropdown-time {
++  font-size: 11px;
++  color: var(--text-3);
++  flex-shrink: 0;
++}
++.ai-chat-dropdown-actions {
++  display: none;
++  gap: 2px;
++  padding-right: 4px;
++}
++.ai-chat-dropdown-item:hover .ai-chat-dropdown-actions {
++  display: flex;
++}
++.ai-chat-dropdown-action {
++  width: 24px;
++  height: 24px;
++  border: none;
++  background: transparent;
++  color: var(--text-3);
++  cursor: pointer;
++  border-radius: 4px;
++  font-size: 13px;
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++}
++.ai-chat-dropdown-action:hover {
++  background: var(--bg-hover);
++  color: var(--text);
++}
++.ai-chat-dropdown-edit {
++  flex: 1;
++  margin: 4px 6px;
++  padding: 6px 8px;
++  border: 1px solid var(--coral);
++  border-radius: 4px;
++  background: var(--input-bg);
++  color: var(--text);
++  font-size: 13px;
++  font-family: var(--font-ui);
++  outline: none;
+ }
+ .ai-chat-close {
+   background: none;
+diff --git a/src/services/ai.ts b/src/services/ai.ts
+index 45b5953..cb0c186 100644
+--- a/src/services/ai.ts
++++ b/src/services/ai.ts
+@@ -1,8 +1,12 @@
+ const AI_BASE_URL = import.meta.env.VITE_AI_BACKEND_URL || 'http://localhost:8000'
+ 
+ interface ChatMessage {
++  /** Stable id when the message has been persisted to the backend. */
++  id?: string
+   role: 'user' | 'assistant'
+   content: string
++  /** Only ever present on assistant messages from /api/ai/search. */
++  recommendations?: RecommendationItem[]
+ }
+ 
+ interface RecommendationItem {
+@@ -29,39 +33,33 @@ function getAuthHeaders(token: string): Record<string, string> {
+   }
+ }
+ 
++export type AIStreamEvent =
++  | { type: 'conversation'; id: string }
++  | { type: 'recommendations'; items: RecommendationItem[] }
++  | { type: 'content'; content: string; done: boolean }
++
+ export async function* streamChat(
+   message: string,
+-  token: string
+-): AsyncGenerator<{ content: string; done: boolean }> {
++  token: string,
++  conversationId: string | null = null,
++): AsyncGenerator<AIStreamEvent> {
+   const response = await fetch(`${AI_BASE_URL}/api/ai/chat`, {
+     method: 'POST',
+     headers: getAuthHeaders(token),
+-    body: JSON.stringify({ message, stream: true }),
++    body: JSON.stringify({
++      message,
++      stream: true,
++      conversation_id: conversationId,
++    }),
+   })
+ 
+   if (!response.ok) {
+     throw new Error(`AI chat request failed: ${response.status}`)
+   }
+ 
+-  const reader = response.body!.getReader()
+-  const decoder = new TextDecoder()
+-  let buffer = ''
+-
+-  while (true) {
+-    const { done, value } = await reader.read()
+-    if (done) break
+-
+-    buffer += decoder.decode(value, { stream: true })
+-    const lines = buffer.split('\n')
+-    buffer = lines.pop() || ''
+-
+-    for (const line of lines) {
+-      if (line.startsWith('data: ')) {
+-        const data = JSON.parse(line.slice(6))
+-        yield data
+-        if (data.done) return
+-      }
+-    }
++  for await (const event of parseSSE<AIStreamEvent>(response)) {
++    yield event
++    if (event.type === 'content' && event.done) return
+   }
+ }
+ 
+@@ -85,18 +83,30 @@ export async function syncEmbeddings(token: string): Promise<EmbeddingSyncStats>
+ 
+ export async function* streamSearch(
+   query: string,
+-  token: string
+-): AsyncGenerator<{ type: string; content?: string; done?: boolean; items?: RecommendationItem[] }> {
++  token: string,
++  conversationId: string | null = null,
++): AsyncGenerator<AIStreamEvent> {
+   const response = await fetch(`${AI_BASE_URL}/api/ai/search`, {
+     method: 'POST',
+     headers: getAuthHeaders(token),
+-    body: JSON.stringify({ query, stream: true }),
++    body: JSON.stringify({
++      query,
++      stream: true,
++      conversation_id: conversationId,
++    }),
+   })
+ 
+   if (!response.ok) {
+     throw new Error(`AI search request failed: ${response.status}`)
+   }
+ 
++  for await (const event of parseSSE<AIStreamEvent>(response)) {
++    yield event
++    if (event.type === 'content' && event.done) return
++  }
++}
++
++async function* parseSSE<T>(response: Response): AsyncGenerator<T> {
+   const reader = response.body!.getReader()
+   const decoder = new TextDecoder()
+   let buffer = ''
+@@ -111,8 +121,7 @@ export async function* streamSearch(
+ 
+     for (const line of lines) {
+       if (line.startsWith('data: ')) {
+-        const data = JSON.parse(line.slice(6))
+-        yield data
++        yield JSON.parse(line.slice(6)) as T
+       }
+     }
+   }
+diff --git a/src/types.ts b/src/types.ts
+index 1549d25..cb786f7 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -37,3 +37,10 @@ export interface LogbookEntry {
+   toStatus: ItemStatus
+   createdAt: number
+ }
++
++export interface Conversation {
++  id: string
++  title: string
++  updatedAt: number
++  createdAt: number
++}
+diff --git a/src/vite-env.d.ts b/src/vite-env.d.ts
+new file mode 100644
+index 0000000..11f02fe
+--- /dev/null
++++ b/src/vite-env.d.ts
+@@ -0,0 +1 @@
++/// <reference types="vite/client" />
+diff --git a/supabase/migrations/005_add_ai_conversations.sql b/supabase/migrations/005_add_ai_conversations.sql
+new file mode 100644
+index 0000000..e19633e
+--- /dev/null
++++ b/supabase/migrations/005_add_ai_conversations.sql
+@@ -0,0 +1,127 @@
++-- AI Chat multi-conversation persistence
++-- Tables: conversations (per-user chat threads), messages (chat turns)
++-- RLS mirrors existing pattern (users_{action}_own_{resource})
++
++-- ============================================================
++-- Conversations
++-- ============================================================
++CREATE TABLE public.conversations (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  user_id uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
++  title text NOT NULL,
++  created_at timestamptz DEFAULT now(),
++  updated_at timestamptz DEFAULT now()
++);
++
++ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
++
++CREATE POLICY "users_read_own_conversations" ON public.conversations
++  FOR SELECT TO authenticated
++  USING ((SELECT auth.uid()) = user_id);
++
++CREATE POLICY "users_insert_own_conversations" ON public.conversations
++  FOR INSERT TO authenticated
++  WITH CHECK ((SELECT auth.uid()) = user_id);
++
++CREATE POLICY "users_update_own_conversations" ON public.conversations
++  FOR UPDATE TO authenticated
++  USING ((SELECT auth.uid()) = user_id)
++  WITH CHECK ((SELECT auth.uid()) = user_id);
++
++CREATE POLICY "users_delete_own_conversations" ON public.conversations
++  FOR DELETE TO authenticated
++  USING ((SELECT auth.uid()) = user_id);
++
++-- Dropdown list ordering: most-recently-active per user
++CREATE INDEX idx_conversations_user_id_updated_at
++  ON public.conversations USING btree (user_id, updated_at DESC);
++
++-- ============================================================
++-- Messages
++-- ============================================================
++CREATE TABLE public.messages (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  conversation_id uuid NOT NULL REFERENCES public.conversations(id) ON DELETE CASCADE,
++  role text NOT NULL CHECK (role IN ('user', 'assistant')),
++  content text NOT NULL,
++  recommendations jsonb,
++  created_at timestamptz DEFAULT now()
++);
++
++ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
++
++-- RLS via parent-conversation ownership (avoids duplicating user_id)
++CREATE POLICY "users_read_own_messages" ON public.messages
++  FOR SELECT TO authenticated
++  USING (
++    EXISTS (
++      SELECT 1 FROM public.conversations c
++      WHERE c.id = messages.conversation_id
++        AND c.user_id = (SELECT auth.uid())
++    )
++  );
++
++CREATE POLICY "users_insert_own_messages" ON public.messages
++  FOR INSERT TO authenticated
++  WITH CHECK (
++    EXISTS (
++      SELECT 1 FROM public.conversations c
++      WHERE c.id = messages.conversation_id
++        AND c.user_id = (SELECT auth.uid())
++    )
++  );
++
++CREATE POLICY "users_update_own_messages" ON public.messages
++  FOR UPDATE TO authenticated
++  USING (
++    EXISTS (
++      SELECT 1 FROM public.conversations c
++      WHERE c.id = messages.conversation_id
++        AND c.user_id = (SELECT auth.uid())
++    )
++  )
++  WITH CHECK (
++    EXISTS (
++      SELECT 1 FROM public.conversations c
++      WHERE c.id = messages.conversation_id
++        AND c.user_id = (SELECT auth.uid())
++    )
++  );
++
++CREATE POLICY "users_delete_own_messages" ON public.messages
++  FOR DELETE TO authenticated
++  USING (
++    EXISTS (
++      SELECT 1 FROM public.conversations c
++      WHERE c.id = messages.conversation_id
++        AND c.user_id = (SELECT auth.uid())
++    )
++  );
++
++CREATE INDEX idx_messages_conversation_id_created_at
++  ON public.messages USING btree (conversation_id, created_at);
++
++-- ============================================================
++-- Triggers
++-- ============================================================
++
++-- Reuse the shared update_updated_at() from 001_initial_schema.sql
++CREATE TRIGGER conversations_updated_at
++  BEFORE UPDATE ON public.conversations
++  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
++
++-- Insert-on-messages bumps the parent conversation so dropdown sort
++-- reflects "most recently active"
++CREATE OR REPLACE FUNCTION public.bump_conversation_updated_at()
++RETURNS trigger AS $$
++BEGIN
++  UPDATE public.conversations
++    SET updated_at = now()
++    WHERE id = NEW.conversation_id;
++  RETURN NEW;
++END;
++$$ LANGUAGE plpgsql;
++
++CREATE TRIGGER messages_bump_conversation
++  AFTER INSERT ON public.messages
++  FOR EACH ROW EXECUTE FUNCTION public.bump_conversation_updated_at();

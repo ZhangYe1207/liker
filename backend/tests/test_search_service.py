@@ -162,15 +162,19 @@ class TestExecuteSearchCollection:
                 return_value=SIMILARITY_MATCHES[:2],
             ),
             patch(
-                "app.services.search.get_user_items",
+                "app.services.search.get_items_by_ids",
                 new_callable=AsyncMock,
-                return_value=SAMPLE_ITEMS,
-            ),
+                return_value=SAMPLE_ITEMS[:2],
+            ) as mock_items,
         ):
             results = await execute_search_collection(
                 embedding_provider, db_client, TEST_USER_ID, {"keywords": "gatsby"}
             )
 
+        # Item lookup is now scoped to the matched ids — no full-collection scan.
+        mock_items.assert_called_once_with(
+            db_client, TEST_USER_ID, ["item-001", "item-002"]
+        )
         assert len(results) == 2
         assert results[0]["title"] == "The Great Gatsby"
         assert results[0]["similarity"] == 0.95
@@ -190,7 +194,7 @@ class TestExecuteSearchCollection:
                 return_value=SIMILARITY_MATCHES,
             ),
             patch(
-                "app.services.search.get_user_items",
+                "app.services.search.get_items_by_ids",
                 new_callable=AsyncMock,
                 return_value=SAMPLE_ITEMS,
             ),
@@ -219,7 +223,7 @@ class TestExecuteSearchCollection:
                 return_value=SIMILARITY_MATCHES,
             ),
             patch(
-                "app.services.search.get_user_items",
+                "app.services.search.get_items_by_ids",
                 new_callable=AsyncMock,
                 return_value=SAMPLE_ITEMS,
             ),
@@ -326,7 +330,7 @@ class TestSearchWithTools:
                 return_value=SIMILARITY_MATCHES[:1],
             ),
             patch(
-                "app.services.search.get_user_items",
+                "app.services.search.get_items_by_ids",
                 new_callable=AsyncMock,
                 return_value=SAMPLE_ITEMS[:1],
             ),

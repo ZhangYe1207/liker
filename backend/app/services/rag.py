@@ -7,9 +7,10 @@ from typing import AsyncIterator
 from supabase import Client
 
 from app.db.embeddings import similarity_search
-from app.db.items import get_user_items
+from app.db.items import get_items_by_ids
 from app.llm.protocols import ChatProvider, EmbeddingProvider
 from app.services.conversation_helpers import (
+    ConversationNotFoundError,
     ensure_conversation,
     load_history,
     persist_assistant_message,
@@ -44,8 +45,8 @@ async def retrieve_context(
     if not matches:
         return [], query_embedding
 
-    # Fetch full item details for matched items
-    items = await get_user_items(db_client, user_id)
+    item_ids = [m["item_id"] for m in matches]
+    items = await get_items_by_ids(db_client, user_id, item_ids)
     items_by_id = {item["id"]: item for item in items}
 
     context_items = []
@@ -157,29 +158,57 @@ async def chat_with_rag_persistent(
     message is persisted **after** the stream finishes, with the accumulated
     content.
     """
-    conv_id, is_new = await ensure_conversation(
-        db_client, user_id, conversation_id, message
-    )
+    try:
+        conv_id, is_new = await ensure_conversation(
+            db_client, user_id, conversation_id, message
+        )
+    except ConversationNotFoundError:
+        yield {
+            "type": "error",
+            "code": "conversation_not_found",
+            "message": "会话不存在或无权访问",
+        }
+        return
+
     if is_new:
         yield {"type": "conversation", "id": conv_id}
 
     await persist_user_message(db_client, conv_id, message)
 
-    context_items, _ = await retrieve_context(
-        embedding_provider, db_client, user_id, message
-    )
-    context_text = format_context(context_items)
-
-    history = await load_history(db_client, conv_id)
-    llm_messages = _build_llm_messages(history, context_text, message)
-
-    stream = await chat_provider.chat(llm_messages, stream=True)
-
     accumulated = ""
-    async for chunk in stream:
-        piece = chunk.get("content", "")
-        if piece:
-            accumulated += piece
-        yield {"type": "content", **chunk}
+    try:
+        context_items, _ = await retrieve_context(
+            embedding_provider, db_client, user_id, message
+        )
+        context_text = format_context(context_items)
+
+        history = await load_history(db_client, conv_id)
+        llm_messages = _build_llm_messages(history, context_text, message)
+
+        stream = await chat_provider.chat(llm_messages, stream=True)
+
+        async for chunk in stream:
+            piece = chunk.get("content", "")
+            if piece:
+                accumulated += piece
+            yield {"type": "content", **chunk}
+    except Exception as exc:  # noqa: BLE001
+        # Provider / DB / embedding failure mid-stream. We've already
+        # persisted the user message; pair it with whatever we got
+        # (or a sentinel) so load_history() doesn't see an orphan
+        # user turn on the next round. Best-effort — if even the
+        # sentinel write fails, give up rather than crash the route.
+        yield {
+            "type": "error",
+            "code": "stream_failed",
+            "message": str(exc) or "生成失败",
+        }
+        try:
+            await persist_assistant_message(
+                db_client, conv_id, accumulated or "（本轮生成失败）"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return
 
     await persist_assistant_message(db_client, conv_id, accumulated)
