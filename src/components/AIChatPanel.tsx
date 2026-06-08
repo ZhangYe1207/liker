@@ -111,7 +111,8 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
     try {
       await renameConversation(id, trimmed)
     } catch {
-      // Hook surfaces errors via console — keep UI quiet; user can retry
+      // Hook already surfaced the reason via the `error` state (shown in the
+      // messages area); swallow the re-throw so it isn't an unhandled rejection.
     }
   }
 
@@ -121,7 +122,8 @@ export default function AIChatPanel({ onClose, onAddItem }: Props) {
     try {
       await deleteConversation(id)
     } catch {
-      // ignore — Supabase errors propagate via hook
+      // Hook already surfaced the reason via the `error` state; swallow the
+      // re-throw so it isn't an unhandled rejection.
     }
   }
 
