@@ -1,10 +1,17 @@
 ---
 title: "fix: AI Chat 多会话 review 剩余 P2 收尾"
 type: fix
-status: active
+status: completed
 date: 2026-06-08
 origin: .context/compound-engineering/ce-review/2026-05-06-multi-conv/REPORT.md
 ---
+
+<!--
+2026-06-08: Unit 1–5 全部实施完成（P2#7/#8/#11/#13/#14/#15 已修，后端 153 测试 +
+前端 tsc 全绿）。待决策项 P2#9/#10/#12 仍未做，按计划走单独「会话写入路径统一」
+brainstorm，不阻塞本 plan 关闭。
+-->
+
 
 # fix: AI Chat 多会话 review 剩余 P2 收尾
 
@@ -42,7 +49,7 @@ review 报告（见 origin）P2 段列了 #7–#15 共 9 项。其中 #6 已在 
 
 ## Implementation Units
 
-- [ ] **Unit 1: conversation_id UUID 校验（P2#7）**
+- [x] **Unit 1: conversation_id UUID 校验（P2#7）**
 
 **Goal:** 畸形 `conversation_id` 返回 422 而非 500
 
@@ -59,7 +66,7 @@ review 报告（见 origin）P2 段列了 #7–#15 共 9 项。其中 #6 已在 
 
 ---
 
-- [ ] **Unit 2: 错误响应契约统一（P2#8）**
+- [x] **Unit 2: 错误响应契约统一（P2#8）**
 
 **Goal:** 所有后端路由用同一种错误结构，前端 `getJson()` 不再按 endpoint 分支
 
@@ -76,7 +83,7 @@ review 报告（见 origin）P2 段列了 #7–#15 共 9 项。其中 #6 已在 
 
 ---
 
-- [ ] **Unit 3: 外部 API + LLM provider 超时（P2#11）**
+- [x] **Unit 3: 外部 API + LLM provider 超时（P2#11）**
 
 **Goal:** 慢上游不再让 SSE 连接挂数分钟
 
@@ -92,7 +99,7 @@ review 报告（见 origin）P2 段列了 #7–#15 共 9 项。其中 #6 已在 
 
 ---
 
-- [ ] **Unit 4: rename/delete 失败反馈（P2#13）**
+- [x] **Unit 4: rename/delete 失败反馈（P2#13）**
 
 **Goal:** 网络失败不再被静默吞掉，用户看到提示并回滚乐观状态
 
@@ -108,7 +115,7 @@ review 报告（见 origin）P2 段列了 #7–#15 共 9 项。其中 #6 已在 
 
 ---
 
-- [ ] **Unit 5: 死代码清理（P2#14 + P2#15）**
+- [x] **Unit 5: 死代码清理（P2#14 + P2#15）**
 
 **Goal:** 删除未使用的非流式分支与骗人 docstring，降低维护面
 
