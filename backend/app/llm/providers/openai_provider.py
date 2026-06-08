@@ -11,6 +11,11 @@ from typing import AsyncIterator
 
 from openai import AsyncOpenAI
 
+# Match the explicit bound we set on Claude. The OpenAI SDK defaults to 600s;
+# 60s fails fast on a dead endpoint while leaving room for a full streamed
+# completion. Subclasses (DeepSeek / Kimi / MiniMax) inherit this.
+_LLM_TIMEOUT = 60.0
+
 
 class OpenAIChatProvider:
     """Chat provider backed by the OpenAI chat completions API."""
@@ -21,7 +26,7 @@ class OpenAIChatProvider:
         model: str = "gpt-4o-mini",
         base_url: str | None = None,
     ) -> None:
-        kwargs: dict = {"api_key": api_key}
+        kwargs: dict = {"api_key": api_key, "timeout": _LLM_TIMEOUT}
         if base_url is not None:
             kwargs["base_url"] = base_url
         self._client = AsyncOpenAI(**kwargs)
