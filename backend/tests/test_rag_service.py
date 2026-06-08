@@ -12,7 +12,6 @@ from jose import jwt
 
 from app.services.rag import (
     SYSTEM_PROMPT,
-    chat_with_rag,
     format_context,
     retrieve_context,
 )
@@ -95,24 +94,6 @@ def _mock_chat_provider(response: dict | None = None) -> MagicMock:
     if response is None:
         response = {"content": "这是AI的回复", "tool_calls": None}
     provider.chat = AsyncMock(return_value=response)
-    provider.model_name = "test-model"
-    return provider
-
-
-def _mock_streaming_chat_provider(chunks: list[dict] | None = None) -> MagicMock:
-    if chunks is None:
-        chunks = [
-            {"content": "你好", "done": False},
-            {"content": "世界", "done": False},
-            {"content": "", "done": True},
-        ]
-
-    async def _stream_iter():
-        for chunk in chunks:
-            yield chunk
-
-    provider = MagicMock()
-    provider.chat = AsyncMock(return_value=_stream_iter())
     provider.model_name = "test-model"
     return provider
 
@@ -302,112 +283,6 @@ class TestRetrieveContext:
 
 
 # ---------------------------------------------------------------------------
-# chat_with_rag
-# ---------------------------------------------------------------------------
-
-
-class TestChatWithRag:
-    @pytest.mark.asyncio
-    async def test_assembles_messages_correctly(self):
-        chat_provider = _mock_chat_provider()
-        embedding_provider = _mock_embedding_provider()
-        db_client = _mock_db_client()
-
-        context_items = [{**SAMPLE_ITEM_FULL, "similarity": 0.95}]
-
-        with (
-            patch(
-                "app.services.rag.retrieve_context",
-                new_callable=AsyncMock,
-                return_value=(context_items, FAKE_EMBEDDING),
-            ),
-        ):
-            result = await chat_with_rag(
-                chat_provider,
-                embedding_provider,
-                db_client,
-                TEST_USER_ID,
-                "分析我的读书品味",
-                stream=False,
-            )
-
-        # Verify chat was called with correct message structure
-        chat_provider.chat.assert_called_once()
-        call_args = chat_provider.chat.call_args
-        messages = call_args[0][0]
-
-        assert len(messages) == 2
-        assert messages[0]["role"] == "system"
-        assert messages[0]["content"] == SYSTEM_PROMPT
-        assert messages[1]["role"] == "user"
-        assert "收藏数据参考" in messages[1]["content"]
-        assert "The Great Gatsby" in messages[1]["content"]
-        assert "分析我的读书品味" in messages[1]["content"]
-
-        # stream=False passed
-        assert call_args[1]["stream"] is False
-
-        assert result == {"content": "这是AI的回复", "tool_calls": None}
-
-    @pytest.mark.asyncio
-    async def test_handles_empty_collection(self):
-        chat_provider = _mock_chat_provider()
-        embedding_provider = _mock_embedding_provider()
-        db_client = _mock_db_client()
-
-        with patch(
-            "app.services.rag.retrieve_context",
-            new_callable=AsyncMock,
-            return_value=([], FAKE_EMBEDDING),
-        ):
-            result = await chat_with_rag(
-                chat_provider,
-                embedding_provider,
-                db_client,
-                TEST_USER_ID,
-                "我喜欢什么类型的电影？",
-                stream=False,
-            )
-
-        # Should still call chat, with empty context message
-        chat_provider.chat.assert_called_once()
-        messages = chat_provider.chat.call_args[0][0]
-        assert "没有相关收藏" in messages[1]["content"]
-
-    @pytest.mark.asyncio
-    async def test_stream_mode(self):
-        chat_provider = _mock_streaming_chat_provider()
-        embedding_provider = _mock_embedding_provider()
-        db_client = _mock_db_client()
-
-        with patch(
-            "app.services.rag.retrieve_context",
-            new_callable=AsyncMock,
-            return_value=([], FAKE_EMBEDDING),
-        ):
-            result = await chat_with_rag(
-                chat_provider,
-                embedding_provider,
-                db_client,
-                TEST_USER_ID,
-                "test",
-                stream=True,
-            )
-
-        # stream=True should be passed to chat
-        chat_provider.chat.assert_called_once()
-        assert chat_provider.chat.call_args[1]["stream"] is True
-
-        # Result should be an async iterator
-        chunks = []
-        async for chunk in result:
-            chunks.append(chunk)
-        assert len(chunks) == 3
-        assert chunks[0] == {"content": "你好", "done": False}
-        assert chunks[-1] == {"content": "", "done": True}
-
-
-# ---------------------------------------------------------------------------
 # API endpoint tests
 # ---------------------------------------------------------------------------
 
@@ -427,43 +302,6 @@ async def client(app):
 
 
 class TestChatEndpoint:
-    @pytest.mark.asyncio
-    async def test_non_stream_returns_envelope(self, client):
-        token = _make_token()
-        expected = {"content": "你的品味很独特", "tool_calls": None}
-
-        with (
-            patch("app.auth.get_settings", _fake_get_settings),
-            patch("app.routers.chat.get_settings", _fake_get_settings),
-            patch(
-                "app.routers.chat.create_chat_provider",
-                return_value=_mock_chat_provider(expected),
-            ),
-            patch(
-                "app.routers.chat.create_embedding_provider",
-                return_value=_mock_embedding_provider(),
-            ),
-            patch(
-                "app.routers.chat.get_supabase_client",
-                return_value=_mock_db_client(),
-            ),
-            patch(
-                "app.routers.chat.chat_with_rag",
-                new_callable=AsyncMock,
-                return_value=expected,
-            ),
-        ):
-            resp = await client.post(
-                "/api/ai/chat",
-                json={"message": "分析我的品味", "stream": False},
-                headers={"Authorization": f"Bearer {token}"},
-            )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["data"] == expected
-        assert body["error"] is None
-
     @pytest.mark.asyncio
     async def test_stream_returns_event_stream(self, client):
         token = _make_token()
@@ -539,6 +377,17 @@ class TestChatEndpoint:
             resp = await client.post(
                 "/api/ai/chat",
                 json={},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_malformed_conversation_id_returns_422(self, client):
+        token = _make_token()
+        with patch("app.auth.get_settings", _fake_get_settings):
+            resp = await client.post(
+                "/api/ai/chat",
+                json={"message": "hi", "conversation_id": "not-a-uuid"},
                 headers={"Authorization": f"Bearer {token}"},
             )
         assert resp.status_code == 422

@@ -7,6 +7,8 @@ by ``/api/ai/chat`` when the first user message arrives. See
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth import get_current_user_id
@@ -35,21 +37,22 @@ async def list_user_conversations(
 
 @router.get("/{conversation_id}/messages", response_model=ResponseEnvelope)
 async def get_conversation_messages(
-    conversation_id: str,
+    conversation_id: UUID,
     user_id: str = Depends(get_current_user_id),
 ) -> ResponseEnvelope:
     """Return messages for a conversation the caller owns (chronological)."""
     client = get_supabase_client()
-    owned = await get_conversation(client, user_id, conversation_id)
+    conv_id = str(conversation_id)
+    owned = await get_conversation(client, user_id, conv_id)
     if not owned:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    rows = await list_messages(client, conversation_id)
+    rows = await list_messages(client, conv_id)
     return ResponseEnvelope(data=rows)
 
 
 @router.patch("/{conversation_id}", response_model=ResponseEnvelope)
 async def rename_conversation(
-    conversation_id: str,
+    conversation_id: UUID,
     payload: RenameConversationRequest,
     user_id: str = Depends(get_current_user_id),
 ) -> ResponseEnvelope:
@@ -59,7 +62,7 @@ async def rename_conversation(
         raise HTTPException(status_code=400, detail="Title cannot be empty")
     client = get_supabase_client()
     updated = await update_conversation_title(
-        client, user_id, conversation_id, title
+        client, user_id, str(conversation_id), title
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -68,12 +71,12 @@ async def rename_conversation(
 
 @router.delete("/{conversation_id}", response_model=ResponseEnvelope)
 async def remove_conversation(
-    conversation_id: str,
+    conversation_id: UUID,
     user_id: str = Depends(get_current_user_id),
 ) -> ResponseEnvelope:
     """Hard-delete a conversation (messages cascade via FK)."""
     client = get_supabase_client()
-    ok = await delete_conversation(client, user_id, conversation_id)
+    ok = await delete_conversation(client, user_id, str(conversation_id))
     if not ok:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return ResponseEnvelope(data={"deleted": True})

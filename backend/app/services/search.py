@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import AsyncIterator
 
 from app.db.embeddings import similarity_search
 from app.db.items import get_items_by_ids, get_user_items
@@ -164,72 +163,6 @@ async def execute_get_taste_profile(
             {"title": i["title"], "rating": i.get("rating")} for i in top_items
         ],
     }
-
-
-async def search_with_tools(
-    chat_provider: ChatProvider,
-    embedding_provider: EmbeddingProvider,
-    db_client: object,
-    user_id: str,
-    query: str,
-    stream: bool = False,
-    tmdb_api_key: str = "",
-) -> tuple[dict | AsyncIterator[dict], list[dict]]:
-    """Single-turn function calling search flow.
-
-    Returns a tuple of (final_result, recommendations).
-    *final_result* is either a dict or an async iterator depending on *stream*.
-    """
-    messages: list[dict] = [
-        {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
-        {"role": "user", "content": query},
-    ]
-
-    # Step 1: LLM decides which tools to call
-    result = await chat_provider.chat(messages, tools=TOOL_DEFINITIONS, stream=False)
-
-    tool_results: list[dict] = []
-    recommendations: list[dict] = []
-
-    if result.get("tool_calls"):
-        for tool_call in result["tool_calls"]:
-            name = tool_call["name"]
-            args = tool_call["arguments"]
-
-            if name == "search_collection":
-                tool_result = await execute_search_collection(
-                    embedding_provider, db_client, user_id, args
-                )
-                tool_results.append({"tool": name, "result": tool_result})
-            elif name == "search_external":
-                tool_result = await execute_search_external(args, tmdb_api_key)
-                recommendations.extend(tool_result)
-                tool_results.append({"tool": name, "result": tool_result})
-            elif name == "get_taste_profile":
-                tool_result = await execute_get_taste_profile(
-                    db_client, user_id, args
-                )
-                tool_results.append({"tool": name, "result": tool_result})
-
-    # Step 2: Send tool results back to LLM for synthesis
-    messages.append(
-        {
-            "role": "assistant",
-            "content": result.get("content", ""),
-            "tool_calls": result.get("tool_calls"),
-        }
-    )
-    messages.append(
-        {
-            "role": "user",
-            "content": f"工具返回结果：\n{json.dumps(tool_results, ensure_ascii=False, default=str)}",
-        }
-    )
-
-    # Step 3: LLM generates final response
-    final_result = await chat_provider.chat(messages, stream=stream)
-
-    return final_result, recommendations
 
 
 async def search_with_tools_persistent(

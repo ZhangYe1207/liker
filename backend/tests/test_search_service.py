@@ -15,7 +15,6 @@ from app.services.search import (
     execute_get_taste_profile,
     execute_search_collection,
     execute_search_external,
-    search_with_tools,
 )
 from app.services.external_apis import search_books, search_movies, search_music
 
@@ -120,27 +119,6 @@ def _mock_embedding_provider() -> MagicMock:
 def _mock_db_client() -> MagicMock:
     """Return a bare MagicMock to stand in for the Supabase client."""
     return MagicMock()
-
-
-def _mock_chat_provider(
-    chat_return: dict | None = None,
-    final_return: dict | None = None,
-) -> MagicMock:
-    """Return a mock chat provider.
-
-    *chat_return* is the response from the first call (tool selection).
-    *final_return* is the response from the second call (synthesis).
-    """
-    provider = MagicMock()
-
-    if chat_return is None:
-        chat_return = {"content": "Let me search for you.", "tool_calls": None}
-    if final_return is None:
-        final_return = {"content": "Here are the results.", "tool_calls": None}
-
-    provider.chat = AsyncMock(side_effect=[chat_return, final_return])
-    provider.model_name = "test-model"
-    return provider
 
 
 # ---------------------------------------------------------------------------
@@ -298,164 +276,6 @@ class TestExecuteGetTasteProfile:
         assert "message" in result
         assert result["message"] == "该分类下没有收藏"
 
-
-# ---------------------------------------------------------------------------
-# search_with_tools
-# ---------------------------------------------------------------------------
-
-
-class TestSearchWithTools:
-    @pytest.mark.asyncio
-    async def test_executes_tool_calls(self):
-        """When the LLM returns tool_calls, they should be executed."""
-        chat_provider = _mock_chat_provider(
-            chat_return={
-                "content": "I'll search your collection.",
-                "tool_calls": [
-                    {
-                        "name": "search_collection",
-                        "arguments": {"keywords": "gatsby"},
-                    }
-                ],
-            },
-            final_return={"content": "Found The Great Gatsby in your collection."},
-        )
-        embedding_provider = _mock_embedding_provider()
-        db_client = _mock_db_client()
-
-        with (
-            patch(
-                "app.services.search.similarity_search",
-                new_callable=AsyncMock,
-                return_value=SIMILARITY_MATCHES[:1],
-            ),
-            patch(
-                "app.services.search.get_items_by_ids",
-                new_callable=AsyncMock,
-                return_value=SAMPLE_ITEMS[:1],
-            ),
-        ):
-            result, recommendations = await search_with_tools(
-                chat_provider,
-                embedding_provider,
-                db_client,
-                TEST_USER_ID,
-                "find gatsby",
-                stream=False,
-            )
-
-        assert result["content"] == "Found The Great Gatsby in your collection."
-        assert recommendations == []
-        # chat() should be called twice: tool selection + synthesis
-        assert chat_provider.chat.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_handles_no_tool_calls(self):
-        """When the LLM responds directly without tools, it should still work."""
-        chat_provider = _mock_chat_provider(
-            chat_return={
-                "content": "I can help you search.",
-                "tool_calls": None,
-            },
-            final_return={"content": "How can I help?"},
-        )
-        embedding_provider = _mock_embedding_provider()
-        db_client = _mock_db_client()
-
-        result, recommendations = await search_with_tools(
-            chat_provider,
-            embedding_provider,
-            db_client,
-            TEST_USER_ID,
-            "hello",
-            stream=False,
-        )
-
-        assert result["content"] == "How can I help?"
-        assert recommendations == []
-
-    @pytest.mark.asyncio
-    async def test_external_search_populates_recommendations(self):
-        """External search results should appear in recommendations."""
-        fake_external_results = [
-            {
-                "title": "Interstellar",
-                "description": "A space epic",
-                "year": "2014",
-                "coverUrl": "",
-                "genre": "",
-                "source": "tmdb",
-                "externalId": "157336",
-            }
-        ]
-
-        chat_provider = _mock_chat_provider(
-            chat_return={
-                "content": "Searching for movies.",
-                "tool_calls": [
-                    {
-                        "name": "search_external",
-                        "arguments": {"query": "space movie", "media_type": "movie"},
-                    }
-                ],
-            },
-            final_return={"content": "Found Interstellar for you."},
-        )
-        embedding_provider = _mock_embedding_provider()
-        db_client = _mock_db_client()
-
-        with patch(
-            "app.services.search.search_movies",
-            new_callable=AsyncMock,
-            return_value=fake_external_results,
-        ):
-            result, recommendations = await search_with_tools(
-                chat_provider,
-                embedding_provider,
-                db_client,
-                TEST_USER_ID,
-                "recommend a space movie",
-                stream=False,
-                tmdb_api_key="test-key",
-            )
-
-        assert len(recommendations) == 1
-        assert recommendations[0]["title"] == "Interstellar"
-
-    @pytest.mark.asyncio
-    async def test_taste_profile_tool_call(self):
-        """get_taste_profile tool call should be executed properly."""
-        chat_provider = _mock_chat_provider(
-            chat_return={
-                "content": "Let me check your taste.",
-                "tool_calls": [
-                    {
-                        "name": "get_taste_profile",
-                        "arguments": {"category": "Books"},
-                    }
-                ],
-            },
-            final_return={"content": "You love Books with avg rating 4.0."},
-        )
-        embedding_provider = _mock_embedding_provider()
-        db_client = _mock_db_client()
-
-        with patch(
-            "app.services.search.get_user_items",
-            new_callable=AsyncMock,
-            return_value=SAMPLE_ITEMS,
-        ):
-            result, recommendations = await search_with_tools(
-                chat_provider,
-                embedding_provider,
-                db_client,
-                TEST_USER_ID,
-                "what are my book preferences",
-                stream=False,
-            )
-
-        assert "Books" in result["content"] or "4.0" in result["content"]
-        assert recommendations == []
 
 
 # ---------------------------------------------------------------------------
@@ -746,45 +566,6 @@ async def client(app):
 
 class TestSearchEndpoint:
     @pytest.mark.asyncio
-    async def test_non_stream_returns_envelope(self, client):
-        """Non-streaming search should return ResponseEnvelope with response and recommendations."""
-        token = _make_token()
-        mock_chat = _mock_chat_provider(
-            chat_return={"content": "Searching...", "tool_calls": None},
-            final_return={"content": "Here are results."},
-        )
-        mock_embed = _mock_embedding_provider()
-
-        with (
-            patch("app.auth.get_settings", _fake_get_settings),
-            patch("app.routers.search.get_settings", _fake_get_settings),
-            patch(
-                "app.routers.search.create_chat_provider",
-                return_value=mock_chat,
-            ),
-            patch(
-                "app.routers.search.create_embedding_provider",
-                return_value=mock_embed,
-            ),
-            patch(
-                "app.routers.search.get_supabase_client",
-                return_value=_mock_db_client(),
-            ),
-        ):
-            resp = await client.post(
-                "/api/ai/search",
-                json={"query": "find gatsby", "stream": False},
-                headers={"Authorization": f"Bearer {token}"},
-            )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "data" in body
-        assert "response" in body["data"]
-        assert "recommendations" in body["data"]
-        assert body["error"] is None
-
-    @pytest.mark.asyncio
     async def test_requires_auth(self, client):
         """Endpoint should require authentication."""
         resp = await client.post(
@@ -792,6 +573,18 @@ class TestSearchEndpoint:
             json={"query": "test", "stream": False},
         )
         assert resp.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_malformed_conversation_id_returns_422(self, client):
+        """A malformed conversation_id is rejected at the edge, not as a 500."""
+        token = _make_token()
+        with patch("app.auth.get_settings", _fake_get_settings):
+            resp = await client.post(
+                "/api/ai/search",
+                json={"query": "hi", "conversation_id": "not-a-uuid"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_returns_sse(self, client):
